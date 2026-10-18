@@ -15,6 +15,7 @@ from .document import analyze, export, PARSER
 from .quality import PROMPT_VERSION, VERSION
 from .translation import translate_record
 from .ocr import signature, LOW_CONFIDENCE
+from .eta import TranslationETA, work_units
 from .storage import atomic_json, fingerprint, now, pages, read_json, root, safe_title, sha256, worker_lock
 
 TERMINAL = {'completed_with_warnings', 'failed', 'cancelled', 'interrupted'}
@@ -68,7 +69,7 @@ def _run(folder, retry_failed):
         atomic_json(folder/'state.json',state)
     try:
         ctypes.windll.kernel32.SetThreadExecutionState(0x80000001)
-        save('preparing','원본 확인',pid=os.getpid(),error=None,eta_seconds=None)
+        save('preparing','원본 확인',pid=os.getpid(),error=None,eta_seconds=None,eta=None)
         original=folder/'Original.pdf'
         if original.exists():
             if state.get('source_sha256') and sha256(original)!=state['source_sha256']:
@@ -103,32 +104,41 @@ def _run(folder, retry_failed):
         if retry_failed:
             records={k:v for k,v in records.items() if v['status']!='failed'}
         state['cache_hits']=len(records)
-        save('translating','모델 준비',total=len(ir['blocks']),completed=len(records),fingerprint=stamp)
+        save('translating','모델 준비',total=len(ir['blocks']),completed=len(records),fingerprint=stamp,
+             eta=dict(state='loading',seconds=None),eta_seconds=None)
         if not any(not b['preserve'] for b in ir['blocks']):
             raise ValueError('번역할 본문을 찾지 못했습니다. OCR 설정과 스캔 선명도를 확인하세요. 원본은 보존됐습니다.')
-        timings=[]
         pending=[b for b in ir['blocks'] if b['id'] not in records]
+        estimator=TranslationETA()
+        remaining_work=sum(work_units(b['source']) for b in pending if not b['preserve'])
+        def progress_eta(current_units=0):
+            estimate=estimator.estimate(remaining_work,current_units)
+            estimate['at_elapsed_seconds']=round(prior+time.monotonic()-began,2)
+            return dict(eta=estimate,eta_seconds=estimate['seconds'])
         with LlamaBackend(folder,cancel,model=model) as backend:
             if any(not b['preserve'] for b in pending):
                 backend.start(lambda msg: save(stage=msg))
             for block in ir['blocks']:
                 if cancel(): raise Cancelled()
                 if block['id'] in records: continue
-                save(stage='문단 번역',current_source_page=block['source_page_index']+1)
+                units=0 if block['preserve'] else work_units(block['source'])
+                save(stage='문단 번역',current_source_page=block['source_page_index']+1,**progress_eta(units))
                 record={k:block[k] for k in ['id','source_page_index','source_page_indices','source_fragments','bbox','kind','source']}
                 record.update(target=block['source'],status='preserved',issues=[])
                 if not block['preserve']:
+                    measured_start=time.monotonic()
                     record=translate_record(backend,block,state['profile'],model.get('adapter','hy'),folder)
-                    timings.append(record['seconds'])
+                    wall_seconds=time.monotonic()-measured_start
+                    record['wall_seconds']=round(wall_seconds,3)
+                    estimator.observe(units,wall_seconds,record.get('attempts',1),record['status']=='translated')
+                    remaining_work-=units
                 record.update(extraction=block['extraction'],ocr_confidence_min=block['ocr_confidence_min'])
                 if block['ocr_confidence_min'] is not None and block['ocr_confidence_min']<LOW_CONFIDENCE:
                     record['issues'].append(dict(code='ocr_low_confidence',severity='major',
                                                  message='OCR 인식 원문 신뢰도가 낮습니다. 이미지 원문과 대조하세요.'))
                 records[block['id']]=record
                 atomic_json(folder/'checkpoint.json',dict(fingerprint=stamp,records=records))
-                remaining=sum(b['id'] not in records and not b['preserve'] for b in ir['blocks'])
-                eta=round(sum(timings[-8:])/len(timings[-8:])*remaining) if timings and remaining else None
-                save(completed=len(records),eta_seconds=eta)
+                save(completed=len(records),**progress_eta())
         if cancel(): raise Cancelled()
         if state.get('reviewer'):
             reviewer=state['reviewer']

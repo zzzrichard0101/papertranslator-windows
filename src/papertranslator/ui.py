@@ -15,6 +15,7 @@ from . import __version__
 from .jobs import create_job
 from .storage import atomic_json, read_json, root
 from .models import catalog, resolve_model
+from .eta import remaining_label
 
 
 def duration(seconds):
@@ -227,10 +228,9 @@ class Window(QMainWindow):
         elapsed=state.get('elapsed_seconds',0); age=0
         if active and state.get('updated_at'):
             age=(datetime.now(timezone.utc)-datetime.fromisoformat(state['updated_at'])).total_seconds(); elapsed+=max(0,age)
-        eta=state.get('eta_seconds') if age<30 else None
-        remaining_text=duration(eta) if active else '—'
+        remaining_text=remaining_label(state,elapsed,active)
         current=state.get('current_source_page'); physical=f'원본 {current}쪽 · ' if current else ''
-        self.detail.setText(f'{physical}문단 {completed}/{total} · 경과 {duration(elapsed)} · 번역 남은 추정 {remaining_text}')
+        self.detail.setText(f'{physical}문단 {completed}/{total} · 경과 {duration(elapsed)} · 번역 예상 {remaining_text}')
         if state.get('error'): self.result.setText(state['error'])
         elif state.get('quality_summary'):
             q=state['quality_summary']; self.result.setText(f'번역 {q["translated"]}문단 · 원문 보존 실패 {q["failed"]}문단 · 경고 {q["warnings"]}문단 · 기계 의미 검수 {q.get("semantic_review_coverage",0):.0%}')

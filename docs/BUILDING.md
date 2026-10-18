@@ -7,11 +7,16 @@ OCR 검사는 의존성에 포함된 소형 모델을 CPU에서 실행하며 Win
 uv sync --frozen --group dev
 uv run pytest -q
 uv run python scripts/audit_public.py
+uv run python scripts/eta_integration.py
 ```
 
 `audit_public.py`는 Git index의 실제 파일 내용을 검사하므로 변경 사항을 stage한 뒤 실행하세요.
 로컬 경로·일부 인증키 형식·생성/바이너리 파일과 공개 파일 허용 목록을 검사합니다.
 모든 민감 정보를 탐지한다는 보증은 아니므로 diff도 함께 확인하세요.
+
+`eta_integration.py`는 합성 PDF와 지연/재시도용 테스트 backend 및 시뮬레이션 시계를 사용합니다.
+실제 job·체크포인트·PDF 저장 경로를 검사하며 GPU나 사용자 작업에 영향을 주지 않습니다.
+번역 모델 성능/의미 정확도 시험과 구분하세요.
 
 ## GPU 통합 시험
 
