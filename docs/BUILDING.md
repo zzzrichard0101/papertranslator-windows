@@ -1,6 +1,7 @@
 # Windows 개발·빌드
 
-Python 3.12, Git, uv를 사용합니다. 일반 단위 검사는 모델과 GPU를 다운로드하지 않습니다.
+Python 3.12, Git, uv를 사용합니다. 단위 검사는 번역 모델/GPU를 사용하지 않습니다.
+OCR 검사는 의존성에 포함된 소형 모델을 CPU에서 실행하며 Windows Arial 글꼴로 합성 이미지를 만듭니다.
 
 ```powershell
 uv sync --frozen --group dev
@@ -19,6 +20,7 @@ uv run python scripts/audit_public.py
 
 ```powershell
 uv run python scripts/integration.py
+uv run python scripts/ocr_integration.py
 uv run python scripts/recovery_checks.py
 uv run python scripts/visual_validate.py
 ```
@@ -37,8 +39,9 @@ uv run python scripts/package_public.py
 
 빌드는 프로세스 내부 PATH만 격리해 다른 앱의 DLL이 섞이지 않게 합니다.
 배포 패키지는 Git의 커밋된 소스 아카이브와 빌드된 앱, 의존 라이선스, SHA256을 생성합니다.
-작업 기록·모델·추론 런타임은 복사하지 않습니다. 실행 파일은 서명되지 않은 알파입니다.
+작업 기록·번역 모델·추론 런타임은 복사하지 않습니다. 소형 OCR 모델은 포함합니다. 실행 파일은 서명되지 않은 알파입니다.
 앱 폴더의 Qt DLL을 별도 파일로 유지하고, 라이선스·재빌드 경로를 함께 배포하세요.
+OCR 모델과 config.yaml은 PyInstaller의 collect-data로 포함합니다. 빌드 후 `scripts/ocr_integration.py --exe dist/PaperTranslator/PaperTranslator.exe`로 실제 OCR/번역 worker를 검사하세요.
 
 실행 파일 사용자도 첫 사용 전에 이 소스 폴더의 `scripts/bootstrap.py`를 실행해 모델과 런타임을 설치해야 합니다.
 모델 다운로드 GUI와 완전 자동 설치 프로그램은 아직 없습니다.

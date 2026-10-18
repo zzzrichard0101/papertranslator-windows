@@ -66,6 +66,10 @@ class Window(QMainWindow):
         form=QFormLayout(); form.setSpacing(10)
         self.title=QLineEdit(); self.title.setPlaceholderText('파일을 선택하면 제목이 입력됩니다.'); form.addRow('저장 제목',self.title)
         self.page_spec=QLineEdit(); self.page_spec.setPlaceholderText('전체 쪽 · 예: 1-12,15,20-'); form.addRow('번역할 쪽',self.page_spec)
+        self.ocr_choice=QComboBox()
+        for label,value in [('자동 · 스캔/이미지 속 글자 인식','auto'),('끄기 · PDF 텍스트만 사용','off'),('강제 · 모든 쪽을 이미지로 다시 인식','force')]:self.ocr_choice.addItem(label,value)
+        self.ocr_choice.setToolTip('영어 인쇄체용 로컬 CPU OCR. 강제 모드는 기존 텍스트 대신 OCR 결과를 사용합니다.')
+        form.addRow('OCR',self.ocr_choice)
         self.profile=QComboBox(); self.profile.addItem('일반 학술','general'); self.profile.addItem('미술치료 · 정신분석','art_therapy'); self.profile.addItem('컴퓨터공학','computer_science'); form.addRow('분야 기록',self.profile)
         self.model_choice=QComboBox()
         registry=read_json(root()/'model_registry.json',{})
@@ -102,7 +106,7 @@ class Window(QMainWindow):
         for w in [self.open_btn,self.ko_btn,self.dual_btn,self.review_btn,self.obsidian_btn]: w.setEnabled(False); results.addWidget(w)
         body.addLayout(results)
         body.addStretch(1)
-        warning=QLabel('초기 개발판: 텍스트 PDF·한국어 재배치 출력 지원.\n스캔 OCR·원문 조판 재현은 개발 중입니다. 기계 검수 통과는 의미 정확도 보증이 아닙니다.')
+        warning=QLabel('초기 개발판: 스캔·혼합 PDF 로컬 OCR 및 한국어 재배치 지원.\nOCR 인식 오류·복잡한 표/수식은 원문 대조가 필요합니다. 기계 검수 통과는 의미 정확도 보증이 아닙니다.')
         warning.setWordWrap(True); warning.setObjectName('notice'); body.addWidget(warning)
         layout.addWidget(panel,1)
         self.setStyleSheet('''QWidget{font-family:"Malgun Gothic";font-size:12px;color:#1c2d40;background:#f6f8fa}QLabel{background:transparent}#sidebar{background:#142536}#sidebar QLabel{color:#bdcbd9}#brand{font-size:25px;font-weight:700;color:#ffffff;letter-spacing:2px}QListWidget{border:0;background:#142536;color:#e4edf4}QListWidget::item{padding:12px 4px;border-bottom:1px solid #2d4051}QListWidget::item:selected{background:#2a465b}#sidebar QPushButton{background:#274357;color:#f4f9fc;border:1px solid #456277}#heading{font-size:27px;font-weight:700}#kicker{font-size:10px;letter-spacing:1px;color:#397579}QPushButton{padding:10px 12px;border:1px solid #d0d9e0;border-radius:7px;background:#ffffff;font-weight:600}QPushButton:hover{background:#e8f1f1}QPushButton:disabled{color:#a8b1ba;background:#edf0f3}#primary{background:#176d70;color:#fff;border-color:#176d70}#primary:hover{background:#125e60}#primary:disabled{background:#99b5b6}#dropzone{border:2px dashed #93b4bc;background:#edf5f5;font-size:14px;line-height:2;color:#285d67}QLineEdit,QComboBox{padding:8px;border:1px solid #cbd5df;border-radius:5px;background:#fff;min-height:20px}#model{font-size:11px;color:#597080}#progresscard{background:#ffffff;border:1px solid #dce3e9;border-radius:9px}#stage{font-size:15px;font-weight:700}QProgressBar{border:0;border-radius:4px;background:#e8edf1;height:10px;text-align:center;font-size:9px}QProgressBar::chunk{background:#278b87;border-radius:4px}#notice{font-size:11px;color:#84612d;background:#f6efdf;border-radius:6px;padding:12px}''')
@@ -137,7 +141,7 @@ class Window(QMainWindow):
     def start_job(self):
         try:
             if not self.source: raise ValueError('PDF를 먼저 선택하세요.')
-            self.folder=create_job(self.source,self.destination,self.page_spec.text(),self.profile.currentData(),self.title.text(),self.model_choice.currentData(),self.review_choice.isChecked())
+            self.folder=create_job(self.source,self.destination,self.page_spec.text(),self.profile.currentData(),self.title.text(),self.model_choice.currentData(),self.review_choice.isChecked(),ocr_mode=self.ocr_choice.currentData())
             self.launch()
         except Exception as exc: QMessageBox.warning(self,'시작할 수 없습니다',str(exc))
 
@@ -182,6 +186,7 @@ class Window(QMainWindow):
         self.source=state.get('source'); self.title.setText(state.get('title','')); self.page_spec.setText(state.get('page_spec',''))
         self.destination=state.get('destination',self.destination); self.dest.setText(self.destination)
         self.profile.setCurrentIndex(max(0,self.profile.findData(state.get('profile','general'))))
+        self.ocr_choice.setCurrentIndex(max(0,self.ocr_choice.findData(state.get('ocr_mode','off'))))
         self.drop.setText(state.get('source_name','PDF')+'\n저장된 작업'); self.refresh()
 
     def refresh_history(self):
@@ -202,7 +207,7 @@ class Window(QMainWindow):
         self.review_choice.setEnabled(not active and bool(can_review))
         if not can_review:self.review_choice.setChecked(False)
         self.model.setText('로컬 모델  '+chosen.get('id','설치 대기')+'  ·  '+chosen.get('status_ko','비교 중 · 의미 검수 필요'))
-        for w in [self.drop,self.title,self.page_spec,self.profile,self.model_choice,self.dest_btn,self.new_btn,self.history]: w.setEnabled(not active)
+        for w in [self.drop,self.title,self.page_spec,self.profile,self.model_choice,self.ocr_choice,self.dest_btn,self.new_btn,self.history]: w.setEnabled(not active)
         self.start.setEnabled(not active and self.source is not None and bool(registry))
         self.cancel_btn.setEnabled(active)
         another_worker=bool(state.get('pid') and psutil.pid_exists(state['pid']))
@@ -229,6 +234,7 @@ class Window(QMainWindow):
         if state.get('error'): self.result.setText(state['error'])
         elif state.get('quality_summary'):
             q=state['quality_summary']; self.result.setText(f'번역 {q["translated"]}문단 · 원문 보존 실패 {q["failed"]}문단 · 경고 {q["warnings"]}문단 · 기계 의미 검수 {q.get("semantic_review_coverage",0):.0%}')
+            if q.get('ocr_pages'):self.result.setText(self.result.text()+f'\nOCR {q["ocr_pages"]}쪽 · 낮은 인식 신뢰도 {q.get("ocr_low_confidence_lines",0)}줄 · 이미지 원문 대조 필요')
         else: self.result.setText('문단별 기록 자동 저장 · 재개 시 완료된 문단 재사용')
 
     def poll_gpu(self):

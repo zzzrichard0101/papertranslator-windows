@@ -16,6 +16,7 @@ def test_public_audit_rejects_generated_files_and_sensitive_values():
     assert any(x[2]=='personal machine path' for x in audit.findings('README.md',local.encode()))
     assert audit.findings('jobs/state.json',b'{}')
     assert audit.findings('src/papertranslator/secret.pdf',b'%PDF-1.7')
+    assert audit.findings('src/papertranslator/model.onnx',b'synthetic weights')
     assert not audit.findings('README.md',b'No models or documents are bundled. SHA256 verifies downloads.')
 
 

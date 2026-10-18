@@ -8,8 +8,9 @@ import shutil
 import pymupdf as fitz
 
 from .storage import atomic_json, safe_title, sha256
+from .ocr import LocalOCR, page_blocks, signature
 
-PARSER = 'pymupdf-logical-paragraph-ir-3'
+PARSER = 'pymupdf-logical-paragraph-ir-4-ocr'
 
 
 def protected_kind(text, spans):
@@ -27,7 +28,7 @@ def protected_kind(text, spans):
     return None
 
 
-def paragraph_units(page):
+def paragraph_units(page, text_blocks=None):
     """Use blank lines, typography and bullets, including across PDF text blocks."""
     units=[];current=[];previous=None
     def flush():
@@ -42,7 +43,7 @@ def paragraph_units(page):
         spans=[s for l in current for s in l['spans']]
         units.append(dict(source=text,bbox=bbox,kind=current[0]['kind'],preserve=False,style_runs=spans))
         current=[]
-    for block in page.get_text('dict',sort=True)['blocks']:
+    for block in (page.get_text('dict',sort=True)['blocks'] if text_blocks is None else text_blocks):
         if block['type']!=0:continue
         spans=[s for line in block['lines'] for s in line['spans']]
         text='\n'.join(''.join(s['text'] for s in line['spans']) for line in block['lines']).strip()
@@ -108,8 +109,13 @@ def segments(text, limit=1800):
     return result
 
 
-def analyze(source, selected, progress=lambda *_: None):
+def analyze(source, selected, progress=lambda *_: None, ocr_mode='auto', cancel=lambda: False, ocr_engine=None):
     doc = fitz.open(source); pages = []; blocks = []
+    engine=ocr_engine
+    def recognize(pixels):
+        nonlocal engine
+        if engine is None:engine=LocalOCR()
+        return engine(pixels)
     try:
         if doc.needs_pass:
             raise ValueError('암호화된 PDF입니다. 암호를 해제한 사본을 선택하세요.')
@@ -118,12 +124,26 @@ def analyze(source, selected, progress=lambda *_: None):
             page_info = dict(source_page_index=index, mediabox=list(page.mediabox), cropbox=list(page.cropbox),
                              rotation=page.rotation, width=page.rect.width, height=page.rect.height,
                              warnings=[], block_ids=[], continuations=[])
-            units=paragraph_units(page)
-            if sum(len(u['source']) for u in units if u['kind']!='page_marker')<20:
-                page_info['warnings'].append('텍스트가 적거나 스캔된 쪽: OCR 미구현, 원문 페이지를 보존합니다.')
+            text_blocks, extraction, warnings=page_blocks(page,ocr_mode,recognize,cancel)
+            page_info['ocr']=extraction;page_info['warnings'].extend(warnings)
+            if extraction['lines']:
+                # An image can sit between lines in one native PDF text block.
+                # Interleave body lines geometrically while retaining code blocks.
+                ordered=[]
+                for block in text_blocks:
+                    spans=[s for line in block['lines'] for s in line['spans']]
+                    text='\n'.join(''.join(s['text'] for s in line['spans']) for line in block['lines'])
+                    if protected_kind(text,spans):ordered.append(block)
+                    else:ordered.extend(dict(type=0,bbox=line['bbox'],lines=[line]) for line in block['lines'])
+                text_blocks=sorted(ordered,key=lambda b:(b['bbox'][1],b['bbox'][0]))
+            units=paragraph_units(page,text_blocks)
             for unit in units:
                 unit['source_page_index']=index
-                unit['fragments']=[dict(source_page_index=index,bbox=unit['bbox'],source=unit['source'])]
+                scores=[s['ocr_confidence'] for s in unit['style_runs'] if s.get('extraction')=='ocr']
+                methods=set(s.get('extraction','native') for s in unit['style_runs'])
+                method='mixed' if len(methods)>1 else next(iter(methods))
+                unit['fragments']=[dict(source_page_index=index,bbox=unit['bbox'],source=unit['source'],
+                                        extraction=method,ocr_confidence_min=min(scores) if scores else None)]
             # Page numbers are metadata and cannot prevent a genuine continuation.
             body=[u for u in units if u['kind']!='page_marker']
             prior=next((u for u in reversed(blocks) if u['kind']!='page_marker'),None)
@@ -149,12 +169,16 @@ def analyze(source, selected, progress=lambda *_: None):
                 item={k:v for k,v in block.items() if k not in {'fragments','source','source_page_index'}}
                 item.update(id=bid,source=segment,source_page_index=indices[0],source_page_indices=indices,
                             source_fragments=fragments,reading_order=len(logical),split_part=part)
+                methods=set(f.get('extraction','native') for f in fragments)
+                scores=[f['ocr_confidence_min'] for f in fragments if f.get('ocr_confidence_min') is not None]
+                item.update(extraction='mixed' if len(methods)>1 else next(iter(methods)),
+                            ocr_confidence_min=min(scores) if scores else None)
                 logical.append(item);by_page[indices[0]]['block_ids'].append(bid)
                 for index in indices[1:]:by_page[index]['continuations'].append(dict(id=bid,source_page_index=indices[0],source_page_indices=indices))
-        return dict(parser=PARSER, pages=pages, blocks=logical,
+        return dict(parser=PARSER, ocr=signature(ocr_mode), pages=pages, blocks=logical,
                     limitations=['빈 줄·제목·글머리표로 문단을 나누고 연속 선택한 쪽의 미완성 본문을 연결합니다. 복잡한 2단·표는 검토가 필요합니다.',
                                  '이 버전은 한국어 가독성을 위한 재배치 출력입니다. 원문과 같은 조판은 아직 구현되지 않았습니다.',
-                                 '스캔 OCR과 표 구조 인식은 아직 구현되지 않았습니다. 기계 의미 검수는 작업 옵션과 coverage를 확인하세요.'])
+                                 'OCR은 영어 인쇄체 중심입니다. 손글씨·수식·흐린 스캔·복잡한 표의 인식 및 읽기 순서는 보장하지 않습니다. 기계 의미 검수는 coverage를 확인하세요.'])
     finally:
         doc.close()
 
@@ -271,7 +295,9 @@ def export(ir, records, original, folder, title, job, cancel=lambda: False):
         reviewed=[r for r in translated if r.get('review',{}).get('evidence_validated')]
         coverage=len(reviewed)/len(translated) if translated else 0
         review_status='not_performed' if not reviewed else ('all_machine_reviewed' if len(reviewed)==len(translated) else 'partially_machine_reviewed')
-        quality=dict(schema=3, needs_review=True, file_generation='completed', semantic_review=review_status,
+        quality=dict(schema=4, ocr=ir.get('ocr'), ocr_pages=sum(p.get('ocr',{}).get('lines',0)>0 for p in ir['pages']),
+                     ocr_low_confidence_lines=sum(p.get('ocr',{}).get('low_confidence_lines',0) for p in ir['pages']),
+                     needs_review=True, file_generation='completed', semantic_review=review_status,
                      semantic_review_coverage=coverage, reviewed_paragraphs=len(reviewed),human_approved=False,
                      reviewer=job.get('reviewer'),
                      model=job['model'], source_sha256=job['source_sha256'],
@@ -289,6 +315,9 @@ def export(ir, records, original, folder, title, job, cancel=lambda: False):
         sections=[]
         for r in records.values():
             issues=' / '.join(i['message'] for i in r.get('issues', []))
+            if r.get('extraction') in {'ocr','mixed'}:
+                score=r.get('ocr_confidence_min')
+                issues+=' / OCR 인식 원문 · 이미지와 대조 필요'+(f' · 최소 신뢰도 {score:.0%}' if score is not None else '')
             if r.get('review'):
                 issues+=' / 검수 '+r['review'].get('verdict','uncertain')+': '+r['review'].get('explanation_ko','')
             target=r['target']
@@ -307,7 +336,7 @@ def export(ir, records, original, folder, title, job, cancel=lambda: False):
                     사용자승인=False, 번역실패문단수=len(failed), tags=['논문','번역'])
         name=safe_title(title)
         note='---\n'+'\n'.join(k+': '+json.dumps(v,ensure_ascii=False) for k,v in fields.items())+'\n---\n\n# '+name+'\n\n'
-        note+=f'> 초기 개발판: 기계 의미 검수 {len(reviewed)}/{len(translated)}문단 · 인간 승인 없음. 스캔 OCR 및 원문 조판 재현은 미지원입니다.\n\n'
+        note+=f'> 초기 개발판: 기계 의미 검수 {len(reviewed)}/{len(translated)}문단 · 인간 승인 없음. OCR {quality["ocr_pages"]}쪽 · 인식 오류 대조 필요. 원문 조판 재현은 미지원입니다.\n\n'
         note+='\n'.join(f'- [[{f}|{label}]]' for f,label in [('Original.pdf','영어 원문'),('Korean.pdf','한국어'),('Bilingual.pdf','영한 대조'),('Review.html','문단 검토')])
         note+='\n\n![[Korean.pdf]]\n\n## 메모\n\n'
         (folder/(name+'.md')).write_text(note,encoding='utf-8')

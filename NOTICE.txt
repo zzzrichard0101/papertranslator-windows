@@ -30,6 +30,22 @@ https://pyinstaller.org/en/stable/license.html
 Built-in Korean PDF fonts come from PyMuPDF; its bundled font notices apply.
 The UI loads Windows-installed Malgun Gothic. Windows font files are not shipped.
 
+Bundled offline CPU OCR:
+RapidOCR / rapidocr-onnxruntime 1.4.4: Apache-2.0.
+Copyright (c) 2021 RapidOCR Authors / RapidAI. All rights reserved.
+https://github.com/RapidAI/RapidOCR/tree/v1.4.4
+PP-OCRv4 detector/recognizer and mobile v2 classifier, converted ONNX weights
+distributed in the pinned RapidOCR wheel, are included unchanged in the app.
+PaddleOCR: Apache-2.0. Copyright (c) 2016 PaddlePaddle Authors.
+https://github.com/PaddlePaddle/PaddleOCR/tree/v2.7.0
+Copies of these Apache licenses are in docs/third-party/.
+Model SHA256 values and raster bounds are specified in src/papertranslator/ocr.py.
+ONNX Runtime: MIT. OpenCV: Apache-2.0. Their wheel notices are included.
+https://github.com/microsoft/onnxruntime
+https://github.com/opencv/opencv
+NumPy, Pillow, Shapely, pyclipper, PyYAML, flatbuffers, protobuf and six retain
+their respective wheel licenses/notices, preserved under dependency-notices.
+
 Separately downloaded inference components (not included in the app archive):
 llama.cpp b11718: MIT. https://github.com/ggml-org/llama.cpp/releases/tag/b11718
 NVIDIA CUDA runtime binaries: NVIDIA's license terms apply.

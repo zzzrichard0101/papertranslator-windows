@@ -14,12 +14,14 @@ from .reviewer import review, REVIEW_VERSION
 from .document import analyze, export, PARSER
 from .quality import PROMPT_VERSION, VERSION
 from .translation import translate_record
+from .ocr import signature, LOW_CONFIDENCE
 from .storage import atomic_json, fingerprint, now, pages, read_json, root, safe_title, sha256, worker_lock
 
 TERMINAL = {'completed_with_warnings', 'failed', 'cancelled', 'interrupted'}
 
 
-def create_job(source, destination, page_spec='', profile='general', title='',model_key=None,independent_review=False):
+def create_job(source, destination, page_spec='', profile='general', title='',model_key=None,independent_review=False,ocr_mode='auto'):
+    signature(ocr_mode)
     source=Path(source).resolve(); destination=Path(destination).resolve()
     if source.suffix.lower()!='.pdf' or not source.is_file():
         raise ValueError('PDF 파일을 선택하세요.')
@@ -33,6 +35,7 @@ def create_job(source, destination, page_spec='', profile='general', title='',mo
                output=None, error=None, pid=None, cache_hits=0)
     # Snapshot before worker launch so later global changes cannot affect this job.
     state['model']=resolve_model(model_key)
+    state['ocr_mode']=ocr_mode
     if independent_review:
         reviewer=read_json(root()/'model_registry.json',{}).get('reviewer')
         if not reviewer or not reviewer.get('qualified_on_small_controls'):
@@ -85,7 +88,8 @@ def _run(folder, retry_failed):
             if len(doc)>2000: raise ValueError('초기 버전은 2,000쪽 이하 PDF를 지원합니다.')
             selected=pages(state['page_spec'],len(doc)); total_pages=len(doc)
         save('analyzing','PDF 구조 분석',source_sha256=sha256(original),total_pages=total_pages,selected=selected)
-        ir=analyze(original,selected,lambda p: save(current_source_page=p))
+        ir=analyze(original,selected,lambda p: save(stage='PDF 분석 · 필요 시 로컬 OCR',current_source_page=p),
+                   ocr_mode=state.get('ocr_mode','off'),cancel=cancel)
         atomic_json(folder/'ir.json',ir)
         registry=read_json(root()/'model_registry.json')
         if not registry: raise RuntimeError('모델 설치가 아직 완료되지 않았습니다.')
@@ -93,7 +97,7 @@ def _run(folder, retry_failed):
         state['model']=model
         stamp=fingerprint(dict(hash=state['source_sha256'], selected=selected, profile=state['profile'],
                                model=model, parser=PARSER, prompt=PROMPT_VERSION, quality=VERSION,
-                               runtime=registry['runtime_release'], options=options_for(model)))
+                               runtime=registry['runtime_release'], options=options_for(model),ocr=ir['ocr']))
         checkpoint=read_json(folder/'checkpoint.json',{})
         records=checkpoint.get('records',{}) if checkpoint.get('fingerprint')==stamp else {}
         if retry_failed:
@@ -101,7 +105,7 @@ def _run(folder, retry_failed):
         state['cache_hits']=len(records)
         save('translating','모델 준비',total=len(ir['blocks']),completed=len(records),fingerprint=stamp)
         if not any(not b['preserve'] for b in ir['blocks']):
-            raise ValueError('번역할 영어 본문을 찾지 못했습니다. 스캔 PDF의 OCR은 다음 개발 단계입니다. 원본은 보존됐습니다.')
+            raise ValueError('번역할 본문을 찾지 못했습니다. OCR 설정과 스캔 선명도를 확인하세요. 원본은 보존됐습니다.')
         timings=[]
         pending=[b for b in ir['blocks'] if b['id'] not in records]
         with LlamaBackend(folder,cancel,model=model) as backend:
@@ -116,6 +120,10 @@ def _run(folder, retry_failed):
                 if not block['preserve']:
                     record=translate_record(backend,block,state['profile'],model.get('adapter','hy'),folder)
                     timings.append(record['seconds'])
+                record.update(extraction=block['extraction'],ocr_confidence_min=block['ocr_confidence_min'])
+                if block['ocr_confidence_min'] is not None and block['ocr_confidence_min']<LOW_CONFIDENCE:
+                    record['issues'].append(dict(code='ocr_low_confidence',severity='major',
+                                                 message='OCR 인식 원문 신뢰도가 낮습니다. 이미지 원문과 대조하세요.'))
                 records[block['id']]=record
                 atomic_json(folder/'checkpoint.json',dict(fingerprint=stamp,records=records))
                 remaining=sum(b['id'] not in records and not b['preserve'] for b in ir['blocks'])
@@ -177,7 +185,8 @@ def _run(folder, retry_failed):
             shutil.rmtree(temp); raise
         save('completed_with_warnings','완료 · 원문 대조 필요',output=str(dest),eta_seconds=None,pid=None,
              quality_summary=dict(failed=quality['failed_paragraphs'],warnings=quality['warnings_paragraphs'],
-                                  translated=quality['translated_paragraphs'],semantic_review_coverage=quality['semantic_review_coverage']))
+                                  translated=quality['translated_paragraphs'],semantic_review_coverage=quality['semantic_review_coverage'],
+                                  ocr_pages=quality['ocr_pages'],ocr_low_confidence_lines=quality['ocr_low_confidence_lines']))
     except Cancelled:
         save('cancelled','취소됨 · 이어하기 가능',pid=None,eta_seconds=None)
     except Exception as exc:
