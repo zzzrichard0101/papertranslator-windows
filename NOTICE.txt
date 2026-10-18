@@ -1,0 +1,46 @@
+PaperTranslator Windows
+Copyright (c) 2026 zzzrichard0101 and contributors.
+Project source: GNU Affero General Public License v3.0 only. See LICENSE.
+No warranty. Public alpha; machine translation requires source comparison.
+
+The project implementation is newly written. The development handoff package,
+private documents, generated job outputs and local machine configuration are not
+part of this public source distribution.
+
+Third-party dependencies retain their own licenses. They are not relicensed by
+this project's LICENSE. Dependency wheel license notices are included with built
+app packages under dependency-notices. Exact Python versions are pinned in uv.lock.
+
+PyMuPDF / MuPDF: AGPL-3.0 or commercial license. This build uses the AGPL version.
+https://pymupdf.readthedocs.io/en/latest/about.html#license-and-copyright
+https://github.com/pymupdf/PyMuPDF/tree/1.26.7
+https://github.com/ArtifexSoftware/mupdf
+
+PySide6 / Qt for Python: LGPL-3.0 / GPL / commercial, as specified per component.
+The executable uses dynamically linked libraries, provided as separate files.
+Users can replace compatible Qt libraries or rebuild the app from the source tag.
+Do not restrict reverse engineering for debugging modifications to LGPL components.
+https://doc.qt.io/qtforpython-6/licenses.html
+https://download.qt.io/official_releases/QtForPython/
+https://download.qt.io/archive/qt/
+
+httpx: BSD-3-Clause. psutil: BSD-3-Clause. Python: PSF license.
+PyInstaller: GPL with bootloader exception.
+https://pyinstaller.org/en/stable/license.html
+Built-in Korean PDF fonts come from PyMuPDF; its bundled font notices apply.
+The UI loads Windows-installed Malgun Gothic. Windows font files are not shipped.
+
+Separately downloaded inference components (not included in the app archive):
+llama.cpp b11718: MIT. https://github.com/ggml-org/llama.cpp/releases/tag/b11718
+NVIDIA CUDA runtime binaries: NVIDIA's license terms apply.
+Hy-MT2-7B-GGUF: Apache-2.0. https://huggingface.co/tencent/Hy-MT2-7B-GGUF
+Qwen3 30B-A3B Instruct: Apache-2.0. https://ollama.com/library/qwen3
+Qwen3.8 27B: Apache-2.0. https://ollama.com/library/qwen3.8
+TranslateGemma 27B: Gemma Terms of Use. https://ollama.com/library/translategemma
+https://ai.google.dev/gemma/terms
+
+Model downloads retain upstream manifests/license layers and verify pinned SHA256.
+TranslateGemma legacy GGUF migration follows the official Ollama compatibility
+recipe at commit 36a6e994d2f6c4ab94b3555185154d069e5dba87. It copies text tensors
+without changing their bytes, omits vision tensors and preserves the original.
+https://github.com/ollama/ollama/blob/36a6e994d2f6c4ab94b3555185154d069e5dba87/compatmigrate/gemma3.go

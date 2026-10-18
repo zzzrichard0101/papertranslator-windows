@@ -1,0 +1,77 @@
+# PaperTranslator Windows
+
+영어 텍스트 PDF를 로컬 모델로 한국어로 번역하는 Windows 앱입니다.
+한국어 PDF, 원문과 번역을 나란히 배치한 PDF, Obsidian용 노트와 문단 검토 보고서를 만듭니다.
+
+**공개 알파**입니다. 번역이 생성됐다는 사실은 의미 정확도를 보장하지 않습니다.
+친족·시간 관계와 전문용어 오역이 남아 있으므로 원문과 대조하세요.
+스캔 OCR과 원문 조판 복원은 아직 지원하지 않습니다.
+
+## 요구사항
+
+- Windows 10/11 x64, NVIDIA GPU와 호환되는 드라이버
+- 소스 실행 시 Python 3.12 및 [uv](https://docs.astral.sh/uv/getting-started/installation/)
+- 첫 설치에는 인터넷과 여유 디스크 공간이 필요합니다. 모델 설치 후 번역은 로컬에서 수행합니다.
+- 개발 장비 RTX 4090에서 관측한 GPU 전체 사용량: Hy-MT2 7B 약 9.1GiB, Qwen3.8 27B 약 19.5GiB
+- 이 메모리 수치는 화면·다른 앱 사용량을 포함합니다. 다른 GPU에서의 동작은 검증하지 않았습니다.
+
+## 시작하기
+
+저장소를 내려받은 폴더에서 실행합니다. PowerShell 실행 정책을 변경할 필요는 없습니다.
+정책이 `.ps1` 실행을 제한하는 환경에서는 아래 Python 명령을 직접 사용하세요.
+
+```powershell
+uv sync --frozen --group dev
+uv run python scripts/bootstrap.py
+uv run python scripts/select_model.py hy7b
+uv run python -m papertranslator
+```
+
+기본 설치는 Hy-MT2 7B와 추론 런타임을 약 6.8GB 다운로드합니다. 크기와 SHA256을 확인합니다.
+설치 스크립트는 모델과 런타임을 사용자 AppData에 저장하며 시스템 PATH·드라이버·방화벽을 변경하지 않습니다.
+
+24GB급 GPU에서 더 큰 모델을 사용하려면 약 17GB를 추가로 다운로드합니다.
+
+```powershell
+uv run python scripts/fetch_qwen38.py
+uv run python scripts/select_model.py qwen38
+```
+
+실험 기본값 Qwen3.8은 일부 진단 문단을 7B보다 잘 옮겼지만 모든 입력에서 우수하다는 검증은 없습니다.
+앱의 모델 목록에서 경량 모드로 되돌릴 수 있습니다. 이미 시작한 작업은 모델 설정을 고정합니다.
+추가 비교 모델 두 개는 `scripts/fetch_candidates.py`로 설치할 수 있습니다(약 36GB 추가).
+TranslateGemma에는 별도 Gemma 이용 조건이 적용됩니다. 모델 가중치는 이 저장소와 릴리스에 포함하지 않습니다.
+
+## 사용법
+
+1. PDF를 선택하거나 드롭합니다.
+2. 제목·쪽 범위·모델·결과 저장 폴더를 선택합니다. 쪽 범위 예: `1-12,15,20-`.
+3. 번역을 시작합니다. 취소한 작업은 작업 기록에서 이어갈 수 있습니다.
+4. 한국어 PDF·영한 대조·문단 검토를 열어 원문과 비교합니다.
+
+결과는 선택한 폴더의 `Papers` 아래 새 폴더에 저장합니다. 같은 제목은 번호를 붙이고 기존 노트를 덮어쓰지 않습니다.
+`Original.pdf`는 선택한 원본 전체의 복사본입니다. `Korean.pdf`와 `Bilingual.pdf`는 선택한 쪽의 재배치 출력입니다.
+Obsidian Vault를 저장 폴더로 지정하면 노트의 상대 링크를 사용할 수 있습니다.
+분야 선택은 현재 기록용이며 검증된 분야별 라우팅이 아닙니다.
+
+## 개인정보와 로컬 데이터
+
+사용자 문서·번역문·작업 기록·모델 설정은 공개 저장소에 포함하지 않습니다.
+번역 결과와 로그는 **사용자의 컴퓨터에는 남습니다**. 로그나 작업 폴더를 그대로 이슈에 첨부하지 마세요.
+자세한 위치와 삭제 범위는 [개인정보 안내](docs/PRIVACY.md)를 확인하세요.
+
+## 빌드·검증
+
+```powershell
+uv run pytest -q
+uv run python scripts/audit_public.py
+```
+
+GPU 통합 시험과 Windows 실행 파일 빌드는 [개발·빌드 안내](docs/BUILDING.md)를 확인하세요.
+개발 시 얻은 비교 결과와 검증 한계는 [모델 평가](docs/EVALUATION.md)에 기록했습니다.
+남은 기능은 [개발 현황](DEVELOPMENT.txt)에 있습니다.
+
+## 라이선스
+
+프로젝트 소스는 [AGPL-3.0-only](LICENSE)입니다. 의존 라이브러리와 모델에는 각자의 라이선스가 적용됩니다.
+[서드파티 안내](NOTICE.txt)를 확인하세요. 릴리스에 모델 가중치·NVIDIA 런타임·Windows 글꼴은 포함하지 않습니다.
