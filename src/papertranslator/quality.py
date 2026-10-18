@@ -2,11 +2,12 @@
 from collections import Counter
 import re
 import secrets
+from .quantities import equivalent_durations
 
-VERSION = 'quality-3'
-PROMPT_VERSION = 'model-paragraph-3'
+VERSION = 'quality-8'
+PROMPT_VERSION = 'model-paragraph-5'
 PROTECTED = re.compile(r'https?://[^\s<>]+|10\.\d{4,9}/[^\s<>]+|`[^`]+`|\bO\([^\n)]{1,60}\)|\[[\d,; -]+\]|\b[A-Z][a-z]+ et al\.(?:,? \d{4})?')
-NUMBER = re.compile(r'(?<![\w])[-−+]?\d+(?:[.,]\d+)*(?:\s?%|[eE][-+]?\d+)?')
+NUMBER = re.compile(r'(?<![A-Za-z0-9_])[-−+]?\d+(?:[.,]\d+)*(?:\s?%|[eE][-+]?\d+)?')
 WORDS=dict(zero=0,one=1,two=2,three=3,four=4,five=5,six=6,seven=7,eight=8,nine=9,ten=10,
            eleven=11,twelve=12,thirteen=13,fourteen=14,fifteen=15,sixteen=16,seventeen=17,eighteen=18,nineteen=19,
            twenty=20,thirty=30,forty=40,fifty=50,sixty=60,seventy=70,eighty=80,ninety=90)
@@ -15,12 +16,19 @@ WORDS=dict(zero=0,one=1,two=2,three=3,four=4,five=5,six=6,seven=7,eight=8,nine=9
 def allowed_written_numbers(source):
     """Permit explicit English quantity/date -> digits, without excusing missing source digits."""
     expression='|'.join(sorted(WORDS,key=len,reverse=True))
-    unit=r'(?:years?|months?|weeks?|days?|hours?|minutes?|seconds?|groups?|participants?|patients?|adults?|sessions?|items?|points?|percent|weekly\s+sessions?)'
     allowed=Counter()
-    pattern=r'\b('+expression+r')(?:[- ]('+expression+r'))?\s+('+unit+r')\b'
+    # Any explicit written cardinal can be rendered with digits (e.g. two drawings).
+    # This permits extra digits only; missing source decimals/signs stay errors.
+    pattern=r'\b('+expression+r')(?:[- ]('+expression+r'))?\b(?:\s+(percent))?'
     for match in re.finditer(pattern,source,re.I):
         value=WORDS[match[1].lower()]+(WORDS[match[2].lower()] if match[2] else 0)
-        allowed[str(value)+('%' if match[3].lower()=='percent' else '')]+=1
+        allowed[str(value)+('%' if match[3] else '')]+=1
+    ordinals=dict(first=1,second=2,third=3,fourth=4,fifth=5,sixth=6,seventh=7,eighth=8,ninth=9,tenth=10)
+    for word,value in ordinals.items():allowed[str(value)]+=len(re.findall(r'\b'+word+r'\b',source,re.I))
+    # Explicit Roman labels, not the pronoun "I" or arbitrary capitalized words.
+    roman={'I':1,'II':2,'III':3,'IV':4,'V':5,'VI':6,'VII':7,'VIII':8,'IX':9,'X':10}
+    for match in re.finditer(r'\b(?:World\s+War\s+|WW|Chapter\s+|Section\s+)(VIII|VII|III|VI|IV|IX|II|V|X|I)\b',source):
+        allowed[str(roman[match[1]])]+=1
     months=['January','February','March','April','May','June','July','August','September','October','November','December']
     for number,name in enumerate(months,1):
         allowed[str(number)]+=len(re.findall(r'\b'+name+r'\s+\d{1,2}\b',source,re.I))
@@ -51,6 +59,12 @@ def restore(text, mapping):
 
 
 TERMS = [
+    ('art as therapy','치료로서의 미술'),
+    ('art-as-therapy','치료로서의 미술'),
+    ('art therapist','미술치료사'),
+    ('art therapy','미술치료'),
+    ('self-taught','독학한'),
+    ('aunt','고모 또는 이모'),
     ('psychiatry residents', '정신건강의학과 전공의'),
     ('occupational therapist', '작업치료사'),
     ('expressive aphasia', '표현성 실어증'),
@@ -77,6 +91,7 @@ TERMS = [
 def relevant_terms(text):
     selected=[];covered=[]
     for source,target in sorted(TERMS,key=lambda item:len(item[0]),reverse=True):
+        if source=='aunt' and re.search(r'maternal|paternal|mother.s sister|father.s sister',text,re.I):continue
         if source=='charcoal' and not re.search(r'paint|draw|art|pencil|workshop|sketch',text,re.I):continue
         if source=='braid' and not re.search(r'hair|gray|grey|shoulder',text,re.I):continue
         if source=='confounding' and not re.search(r'model|statistic|observational|measurement|regression|variable',text,re.I):continue
@@ -112,22 +127,26 @@ def check(source, target):
     if not target.strip():
         return [dict(code='empty', severity='critical', message='번역 결과가 비어 있습니다.')]
     normalize = lambda s: s.replace('−', '-').replace(' ', '')
-    a = Counter(normalize(x) for x in NUMBER.findall(source))
-    b = Counter(normalize(x) for x in NUMBER.findall(target))
+    numeric_source,numeric_target,unmatched=equivalent_durations(source,target)
+    a = Counter(normalize(x) for x in NUMBER.findall(numeric_source))
+    b = Counter(normalize(x) for x in NUMBER.findall(numeric_target))
     # Missing original decimal/sign/count is always an error. Only genuine extra
     # digits corresponding to explicit written quantities/dates may be consumed.
-    missing=a-b;added=(b-a)-allowed_written_numbers(source)
+    missing=a-b;added=(b-a)-allowed_written_numbers(numeric_source)
+    if unmatched:
+        errors.append(dict(code='quantity',severity='major',message='기간의 값·단위가 원문과 같은지 확인하세요.',unmatched=unmatched))
     if missing or added:
         errors.append(dict(code='numbers', severity='major', message='숫자·부호·개수를 원문과 대조하세요.', missing=list(missing.elements()), added=list(added.elements())))
     if re.search(r'\bp\s*[=<>≤≥]', source, re.I) and '유의수준' in target:
         errors.append(dict(code='p_vs_alpha', severity='critical', message='p값을 유의수준으로 바꿨을 가능성'))
     if 'random' not in source.lower() and re.search('무작위|랜덤', target):
         errors.append(dict(code='added_random', severity='critical', message='원문에 없는 무작위 배정 가능성'))
-    if re.search(r'\bnot\b|\bno\b|\bnever\b|\bwithout\b', source, re.I) and not re.search(r'않|없|아니|아닌|아닙|못|비유의|배제|제외|말고|안\s|금지|마십', target):
+    if re.search(r'\bnot\b|\bno\b|\bnever\b|\bwithout\b', source, re.I) and not re.search(r'않|없|아니|아닌|아닙|못|비유의|배제|제외|말고|마라|안\s|금지|마십', target):
         errors.append(dict(code='negation', severity='major', message='부정 표현이 보존됐는지 확인하세요.'))
     if re.search(r'\baunts?\b', source, re.I) and '삼촌' in target:
         errors.append(dict(code='kinship', severity='critical', message='여성 친족이 남성 친족으로 바뀔 가능성'))
-    if re.search(r'\baunts?\b', source, re.I) and not re.search(r'maternal|paternal|mother.s sister|father.s sister', source, re.I) and re.search('이모|고모',target):
+    uncertain_side=re.search(r'고모[^.!?\n]{0,25}(?:또는|/|혹은)[^.!?\n]{0,25}이모|이모[^.!?\n]{0,25}(?:또는|/|혹은)[^.!?\n]{0,25}고모',target)
+    if re.search(r'\baunts?\b', source, re.I) and not re.search(r'maternal|paternal|mother.s sister|father.s sister', source, re.I) and re.search('이모|고모',target) and not uncertain_side:
         errors.append(dict(code='kinship_side', severity='major', message='원문이 구분하지 않은 부계·모계 친족을 특정했을 가능성'))
     if not re.search(r'[가-힣]', target) and len(re.findall(r'[A-Za-z]+', source)) > 3:
         errors.append(dict(code='untranslated', severity='major', message='한국어 번역을 확인하지 못했습니다.'))
@@ -137,4 +156,9 @@ def check(source, target):
         errors.append(dict(code='expansion', severity='major', message='비정상적으로 긴 번역'))
     if len(re.findall(r'[\u4e00-\u9fff]',target))>=2 and not re.search(r'[\u4e00-\u9fff]',source):
         errors.append(dict(code='mixed_script',severity='minor',message='원문에 없는 한자·중국어가 섞였는지 확인하세요.'))
+    # Parenthetical Korean Hanja annotations remain review warnings. Chinese text
+    # inserted in the running prose requires a repair, even between punctuation.
+    running_text=re.sub(r'\([^()]*\)|（[^（）]*）','',target)
+    if not re.search(r'[\u4e00-\u9fff]',source) and re.search(r'[\u4e00-\u9fff]',running_text):
+        errors.append(dict(code='embedded_han',severity='major',message='한국어 본문에 원문에 없는 한자·중국어가 섞였습니다.'))
     return errors

@@ -9,7 +9,88 @@ import pymupdf as fitz
 
 from .storage import atomic_json, safe_title, sha256
 
-PARSER = 'pymupdf-text-ir-1'
+PARSER = 'pymupdf-logical-paragraph-ir-3'
+
+
+def protected_kind(text, spans):
+    """Protect actual code/formula regions, never ordinary uses of 'return'."""
+    mono=sum(len(s['text'].strip()) for s in spans if s.get('flags',0)&8 or
+             re.search(r'courier|consolas|mono',s.get('font',''),re.I))
+    length=sum(len(s['text'].strip()) for s in spans)
+    syntax=re.search(r'^\s*(?:def\s+\w+\s*\(|class\s+\w+[(:]|from\s+[\w.]+\s+import\s|'
+                     r'import\s+[\w.]+\s*$|function\s+\w+\s*\(|SELECT\s+.+\s+FROM\s)',text,re.M)
+    if syntax or (mono>=max(4,length*.7) and re.search(r'[=():{};]|^\s*return\b',text,re.M)):
+        return 'code'
+    if sum(c.isalpha() for c in text)<4:return 'symbol'
+    if len(text)<220 and re.search(r'[∑∫√]|[μσ]\s*[=±]',text) and len(re.findall(r'\b[A-Za-z]{3,}\b',text))<4:
+        return 'formula'
+    return None
+
+
+def paragraph_units(page):
+    """Use blank lines, typography and bullets, including across PDF text blocks."""
+    units=[];current=[];previous=None
+    def flush():
+        nonlocal current
+        if not current:return
+        text=''
+        for line in current:
+            part=line['text'].strip()
+            text+=('' if not text or (text.endswith('-') and part[:1].islower()) else ' ')+part
+        bbox=[min(l['bbox'][0] for l in current),min(l['bbox'][1] for l in current),
+              max(l['bbox'][2] for l in current),max(l['bbox'][3] for l in current)]
+        spans=[s for l in current for s in l['spans']]
+        units.append(dict(source=text,bbox=bbox,kind=current[0]['kind'],preserve=False,style_runs=spans))
+        current=[]
+    for block in page.get_text('dict',sort=True)['blocks']:
+        if block['type']!=0:continue
+        spans=[s for line in block['lines'] for s in line['spans']]
+        text='\n'.join(''.join(s['text'] for s in line['spans']) for line in block['lines']).strip()
+        if not text:continue
+        region=protected_kind(text,spans)
+        marker=bool(re.fullmatch(r'\d{1,4}',text)) and (block['bbox'][1]>page.rect.height*.9 or block['bbox'][3]<page.rect.height*.1)
+        if region or marker:
+            flush();previous=None
+            units.append(dict(source=text,bbox=list(block['bbox']),kind='page_marker' if marker else 'protected',
+                              preserve=True,preserve_reason='page_number' if marker else region,style_runs=spans))
+            continue
+        for line in block['lines']:
+            spans=line['spans'];text=''.join(s['text'] for s in spans)
+            if not text.strip():flush();previous=None;continue
+            visible=[s for s in spans if s['text'].strip()]
+            count=sum(len(s['text']) for s in visible)
+            bold=sum(len(s['text']) for s in visible if s.get('flags',0)&16)
+            heading=len(text)<180 and (bold>count*.75 or max(s['size'] for s in visible)>=16)
+            kind='heading' if heading else 'paragraph'
+            gap=previous and line['bbox'][1]-previous['bbox'][3]>max(s['size'] for s in visible)*.65
+            bullet=bool(re.match(r'^\s*[•●▪◦]',text))
+            numbered=bool(re.match(r'^\s*\d+[.)]\s',text))
+            if numbered and current and not gap:
+                # A wrapped age/value such as "age / 31. She ..." is not a list.
+                numbered=bool(re.search(r'[.!?][\"\x27’”]*\s*$',current[-1]['text'])) or bool(re.match(r'^\s*\d+[.)]\s',current[0]['text']))
+            bullet|=numbered
+            if current and (kind!=current[0]['kind'] or heading or bullet or gap):flush()
+            current.append(dict(text=text,bbox=line['bbox'],spans=spans,kind=kind));previous=line
+    flush()
+    return units
+
+
+def continuation(left,right,left_page,right_page):
+    if left['preserve'] or right['preserve'] or left['kind']!='paragraph' or right['kind']!='paragraph':return False
+    if right_page['source_page_index']!=left_page['source_page_index']+1:return False
+    a=left['source'].rstrip();b=right['source'].lstrip()
+    if not a or not b or re.search(r'[.!?。！？…][\"\x27’”\])]*$',a):return False
+    if re.match(r'[•●▪◦]|\d+[.)]\s',b):return False
+    # An unpunctuated stage note after a finished sentence is not a continuation.
+    prefix=re.sub(r'\s*[([][^()\[\]]{0,180}[)\]]\s*$','',a)
+    if prefix!=a and re.search(r'[.!?][\"\x27’”\])]*$',prefix):return False
+    connector=re.search(r'\b(?:the|a|an|of|to|for|and|or|with|in|by|from|as|through|not|couldn.t|must|can)\s*$',a,re.I)
+    if not (b[:1].islower() or b[:1].isdigit() or connector or a.endswith(('-',',',':'))):return False
+    last=left['fragments'][-1]
+    if last['source_page_index']!=left_page['source_page_index']:return False
+    # Require a real physical boundary, not a short caption ending mid-page.
+    if last['bbox'][3]<left_page['height']*.68 or right['bbox'][1]>right_page['height']*.3:return False
+    return True
 
 
 def segments(text, limit=1800):
@@ -36,31 +117,42 @@ def analyze(source, selected, progress=lambda *_: None):
             page = doc[index]; progress(index+1)
             page_info = dict(source_page_index=index, mediabox=list(page.mediabox), cropbox=list(page.cropbox),
                              rotation=page.rotation, width=page.rect.width, height=page.rect.height,
-                             warnings=[], block_ids=[])
-            raw = page.get_text('dict', sort=True)
-            visible = [b for b in raw['blocks'] if b['type'] == 0]
-            if sum(len(s['text']) for b in visible for ln in b['lines'] for s in ln['spans']) < 20:
+                             warnings=[], block_ids=[], continuations=[])
+            units=paragraph_units(page)
+            if sum(len(u['source']) for u in units if u['kind']!='page_marker')<20:
                 page_info['warnings'].append('텍스트가 적거나 스캔된 쪽: OCR 미구현, 원문 페이지를 보존합니다.')
-            for block in visible:
-                lines = [''.join(s['text'] for s in line['spans']) for line in block['lines']]
-                text = '\n'.join(lines).strip()
-                if not text:
-                    continue
-                spans = [s for ln in block['lines'] for s in ln['spans']]
-                preserve = bool(re.search(r'\b(def |class |import |return |for\s*\(|while\s*\(|SELECT |function\s)', text))
-                preserve |= sum(c.isalpha() for c in text) < 4
-                preserve |= bool(re.search(r'[∑∫√]|[μσ]\s*[=±]', text))
-                kind = 'protected' if preserve else ('heading' if max(s['size'] for s in spans) >= 16 else 'paragraph')
-                # Code/formula text retains line breaks and indentation verbatim.
-                for part, segment in enumerate([text] if preserve else segments(text)):
-                    bid = f'p{index+1}-b{block["number"]}-s{part}'
-                    item = dict(id=bid, source_page_index=index, bbox=list(block['bbox']), kind=kind,
-                                source=segment, style_runs=[dict(text=s['text'], font=s['font'], size=s['size'], flags=s['flags']) for s in spans],
-                                reading_order=len(blocks), split_part=part, preserve=preserve)
-                    blocks.append(item); page_info['block_ids'].append(bid)
+            for unit in units:
+                unit['source_page_index']=index
+                unit['fragments']=[dict(source_page_index=index,bbox=unit['bbox'],source=unit['source'])]
+            # Page numbers are metadata and cannot prevent a genuine continuation.
+            body=[u for u in units if u['kind']!='page_marker']
+            prior=next((u for u in reversed(blocks) if u['kind']!='page_marker'),None)
+            if pages and prior and body and continuation(prior,body[0],pages[-1],page_info):
+                first=body[0]
+                separator='' if prior['source'].endswith('-') and first['source'][:1].islower() else ' '
+                prior['source']+=separator+first['source'];prior['fragments']+=first['fragments']
+                prior['style_runs']+=first['style_runs'];units.remove(first)
+            blocks.extend(units)
             pages.append(page_info)
-        return dict(parser=PARSER, pages=pages, blocks=blocks,
-                    limitations=['읽기 순서는 PyMuPDF 기본 정렬입니다. 복잡한 2단·표·쪽을 넘는 문장은 검토가 필요합니다.',
+        logical=[];by_page={p['source_page_index']:p for p in pages}
+        for number,block in enumerate(blocks):
+            source=block['source'];cursor=0;offset=0;spans=[]
+            for fragment in block['fragments']:
+                start=source.find(fragment['source'],offset)
+                if start<0:raise RuntimeError('연결 문단의 원문 위치를 확인하지 못했습니다.')
+                end=start+len(fragment['source']);spans.append((start,end,fragment));offset=end
+            for part,segment in enumerate([source] if block['preserve'] else segments(source)):
+                start=source.find(segment,cursor);end=start+len(segment);cursor=end
+                fragments=[{**f,'source':source[max(a,start):min(b,end)]} for a,b,f in spans if a<end and b>start]
+                indices=list(dict.fromkeys(f['source_page_index'] for f in fragments))
+                bid=f'p{indices[0]+1}-u{number}-s{part}'
+                item={k:v for k,v in block.items() if k not in {'fragments','source','source_page_index'}}
+                item.update(id=bid,source=segment,source_page_index=indices[0],source_page_indices=indices,
+                            source_fragments=fragments,reading_order=len(logical),split_part=part)
+                logical.append(item);by_page[indices[0]]['block_ids'].append(bid)
+                for index in indices[1:]:by_page[index]['continuations'].append(dict(id=bid,source_page_index=indices[0],source_page_indices=indices))
+        return dict(parser=PARSER, pages=pages, blocks=logical,
+                    limitations=['빈 줄·제목·글머리표로 문단을 나누고 연속 선택한 쪽의 미완성 본문을 연결합니다. 복잡한 2단·표는 검토가 필요합니다.',
                                  '이 버전은 한국어 가독성을 위한 재배치 출력입니다. 원문과 같은 조판은 아직 구현되지 않았습니다.',
                                  '스캔 OCR과 표 구조 인식은 아직 구현되지 않았습니다. 기계 의미 검수는 작업 옵션과 coverage를 확인하세요.'])
     finally:
@@ -115,19 +207,37 @@ def flow_pdf(ir, records, path, title):
                 page.insert_text((42,y), line, fontname='KO', fontsize=10, color=(.7,.34,.1)); y+=16
         if p['warnings']:
             y += 10
+        for continuation_info in p.get('continuations',[]):
+            first=continuation_info['source_page_index']+1
+            notice=f'[연결 안내] 이 쪽의 이어지는 본문은 원본 {first}쪽 번역면의 연결 문단에 함께 번역했습니다.'
+            for line in lines_for(notice,9):
+                if y+14>789:new_page(index,True)
+                page.insert_text((42,y),line,fontname='KO',fontsize=9,color=(.15,.4,.42));y+=14
+            y+=8
         for bid in p['block_ids']:
             record = records[bid]; failed=record['status']=='failed'
-            text = record['target']
-            label = '[번역 실패 · 원문 보존] ' if failed else ('[원문 보존] ' if record['status']=='preserved' else '')
+            if record['kind']=='page_marker':continue
+            indices=record.get('source_page_indices',[index])
+            connection_label=f'[연결 문단: 원본 {indices[0]+1}-{indices[-1]+1}쪽]' if len(indices)>1 else ''
+            text = record.get('candidate') if failed and record.get('candidate') else record['target']
+            label = ('[자동 검사 미통과 · 검토용 번역] ' if record.get('candidate') else '[번역 실패 · 원문 보존] ') if failed else ('[원문 보존] ' if record['status']=='preserved' else '')
             text = label + text
-            size=14 if record['kind']=='heading' else 11
-            for line in lines_for(text, size):
+            size=13 if record['kind']=='heading' else 11
+            lines=lines_for(text,size)
+            # Keep a short paragraph together rather than stranding its last line.
+            height=len(lines)*size*1.55
+            if record['kind']!='heading' and height<650 and y+height+(17 if connection_label else 0)>789 and y>100:
+                new_page(index,True)
+            if connection_label:
+                if y+17>789:new_page(index,True)
+                page.insert_text((42,y),connection_label,fontname='KO',fontsize=9,color=(.15,.4,.42));y+=17
+            for line in lines:
                 if y+size > 789:
                     new_page(index, True)
                 page.insert_text((42,y), line, fontname='KO', fontsize=size,
                                  color=(.65,.27,.08) if failed else (.08,.13,.20))
                 y += size*1.55
-            y += 10
+            y += 8
     if not len(doc):
         raise RuntimeError('출력할 쪽이 없습니다.')
     doc.subset_fonts(); doc.save(path, garbage=4, deflate=True)
@@ -161,7 +271,7 @@ def export(ir, records, original, folder, title, job, cancel=lambda: False):
         reviewed=[r for r in translated if r.get('review',{}).get('evidence_validated')]
         coverage=len(reviewed)/len(translated) if translated else 0
         review_status='not_performed' if not reviewed else ('all_machine_reviewed' if len(reviewed)==len(translated) else 'partially_machine_reviewed')
-        quality=dict(schema=2, needs_review=True, file_generation='completed', semantic_review=review_status,
+        quality=dict(schema=3, needs_review=True, file_generation='completed', semantic_review=review_status,
                      semantic_review_coverage=coverage, reviewed_paragraphs=len(reviewed),human_approved=False,
                      reviewer=job.get('reviewer'),
                      model=job['model'], source_sha256=job['source_sha256'],
@@ -170,6 +280,10 @@ def export(ir, records, original, folder, title, job, cancel=lambda: False):
                      failed_paragraphs=len(failed), warnings_paragraphs=len(warnings),
                      translated_paragraphs=sum(r['status']=='translated' for r in records.values()),
                      preserved_paragraphs=sum(r['status']=='preserved' for r in records.values()),
+                     page_markers=sum(r['kind']=='page_marker' for r in records.values()),
+                     connected_paragraphs=sum(len(r.get('source_page_indices',[]))>1 for r in records.values()),
+                     failed_candidate_paragraphs=sum(r['status']=='failed' and bool(r.get('candidate')) for r in records.values()),
+                     assistant_edited_paragraphs=sum(bool(r.get('assistant_post_edit')) for r in records.values()),
                      limitations=ir['limitations'], pages=ir['pages'], records=list(records.values()))
         atomic_json(folder/'Quality.json', quality)
         sections=[]
@@ -177,9 +291,14 @@ def export(ir, records, original, folder, title, job, cancel=lambda: False):
             issues=' / '.join(i['message'] for i in r.get('issues', []))
             if r.get('review'):
                 issues+=' / 검수 '+r['review'].get('verdict','uncertain')+': '+r['review'].get('explanation_ko','')
-            sections.append(f'<article><h2>원본 {r["source_page_index"]+1}쪽 · {html.escape(r["id"])}</h2>'
+            target=r['target']
+            if r['status']=='failed' and r.get('candidate'):
+                issues='자동 검사 미통과: 아래는 승인되지 않은 검토용 번역 후보입니다. / '+issues
+                target=r['candidate']
+            page_label=', '.join(str(i+1) for i in r.get('source_page_indices',[r['source_page_index']]))
+            sections.append(f'<article><h2>원본 {page_label}쪽 · {html.escape(r["id"])}</h2>'
                             f'<p class="warning">{html.escape(issues)}</p><div class="pair"><pre>{html.escape(r["source"])}</pre>'
-                            f'<pre lang="ko">{html.escape(r["target"])}</pre></div></article>')
+                            f'<pre lang="ko">{html.escape(target)}</pre></div></article>')
         review='''<!doctype html><html lang="ko"><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"><title>번역 검토</title><style>body{font:16px/1.7 'Malgun Gothic',sans-serif;margin:40px;background:#f4f6f8;color:#152233}header,article{max-width:1280px;margin:20px auto;padding:24px;background:white;border-radius:12px}h2{font-size:16px}.pair{display:grid;grid-template-columns:1fr 1fr;gap:30px}pre{white-space:pre-wrap;font:inherit;overflow-wrap:anywhere}.warning{color:#9a4a10}@media(max-width:700px){.pair{grid-template-columns:1fr}}</style><header><h1>영한 문단 검토</h1><p>초기 개발판 · 자동 검사는 의미 정확도를 보증하지 않습니다. 검수 범위와 판정은 Quality.json에 기록됩니다.</p></header>'''+''.join(sections)+'</html>'
         (folder/'Review.html').write_text(review,encoding='utf-8')
         fields=dict(제목=title, 원본파일=job['source_name'], 번역일=job['created_at'], 원본SHA256=job['source_sha256'],

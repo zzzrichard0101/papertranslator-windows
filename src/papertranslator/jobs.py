@@ -12,7 +12,8 @@ from .backend import Cancelled, LlamaBackend, OPTIONS
 from .models import resolve_model, options_for
 from .reviewer import review, REVIEW_VERSION
 from .document import analyze, export, PARSER
-from .quality import check, make_prompt, protect, restore, PROMPT_VERSION, VERSION
+from .quality import PROMPT_VERSION, VERSION
+from .translation import translate_record
 from .storage import atomic_json, fingerprint, now, pages, read_json, root, safe_title, sha256, worker_lock
 
 TERMINAL = {'completed_with_warnings', 'failed', 'cancelled', 'interrupted'}
@@ -110,26 +111,11 @@ def _run(folder, retry_failed):
                 if cancel(): raise Cancelled()
                 if block['id'] in records: continue
                 save(stage='문단 번역',current_source_page=block['source_page_index']+1)
-                record={k:block[k] for k in ['id','source_page_index','bbox','kind','source']}
+                record={k:block[k] for k in ['id','source_page_index','source_page_indices','source_fragments','bbox','kind','source']}
                 record.update(target=block['source'],status='preserved',issues=[])
                 if not block['preserve']:
-                    protected,mapping=protect(block['source'])
-                    prompt=make_prompt(protected,mapping,state['profile'],model.get('adapter','hy'))
-                    try:
-                        # Respect the context/output budget, with no silent truncation.
-                        result=backend.translate(prompt,max_tokens=1800 if backend.options['context']==4096 else 2200)
-                        # Keep raw local response separately from document-free engine diagnostics.
-                        atomic_json(folder/'responses'/(block['id']+'.json'),result)
-                        target=restore(result['text'],mapping)
-                        issues=check(block['source'],target)
-                        record.update(target=target,issues=issues,status='translated',seconds=result['seconds'])
-                        if any(i['code'] in {'numbers','empty','untranslated','new_markup'} or i['severity']=='critical' for i in issues):
-                            record.update(candidate=target,target=block['source'],status='failed')
-                        timings.append(result['seconds'])
-                    except Cancelled:
-                        raise
-                    except Exception as exc:
-                        record.update(status='failed',issues=[dict(code='generation',severity='major',message=str(exc)[:500])])
+                    record=translate_record(backend,block,state['profile'],model.get('adapter','hy'),folder)
+                    timings.append(record['seconds'])
                 records[block['id']]=record
                 atomic_json(folder/'checkpoint.json',dict(fingerprint=stamp,records=records))
                 remaining=sum(b['id'] not in records and not b['preserve'] for b in ir['blocks'])
