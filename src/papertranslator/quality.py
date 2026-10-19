@@ -4,7 +4,7 @@ import re
 import secrets
 from .quantities import equivalent_durations
 
-VERSION = 'quality-10'
+VERSION = 'quality-11'
 PROMPT_VERSION = 'contextual-paragraph-8'
 PROTECTED = re.compile(r'https?://[^\s<>]+|10\.\d{4,9}/[^\s<>]+|`[^`]+`|\bO\([^\n)]{1,60}\)|\[[\d,; -]+\]|\b[A-Z][a-z]+ et al\.(?:,? \d{4})?')
 NUMBER = re.compile(r'(?<![A-Za-z0-9_])[-−+]?\d+(?:[.,]\d+)*(?:\s?%|[eE][-+]?\d+)?')
@@ -158,7 +158,16 @@ def check(source, target):
         value=re.sub(r'(\d+(?:\.\d+)?)\s*(?:per\s+cent|percent)\b',r'\1%',value,flags=re.I)
         value=re.sub(r'(\d+(?:\.\d+)?)\s*퍼센트',r'\1%',value)
         return re.sub(r'(?<=[A-Za-z])((?:1[5-9]|20)\d{2})(?=s\b|\b)',r' \1',value)
-    numeric_source,numeric_target,unmatched=equivalent_durations(normalize_percent(source),normalize_percent(target))
+    year=r'(?:1[5-9]|20)\d{2}[a-z]?'
+    year_list=year+r'(?:\s*[,;]\s*'+year+r')+'
+    citations=re.findall(r"\b[A-Z][A-Za-z’'-]{2,}(?:\s+et al\.)?\s*\(\s*("+year_list+r')\s*\)',source)
+    allowed_lists={re.sub(r'\s+','',value) for value in citations}
+    def citation_spacing(text):
+        def replace(match):
+            if re.sub(r'\s+','',match[1]) not in allowed_lists:return match[0]
+            return '('+re.sub(r'([,;])\s*',r'\1 ',match[1])+')'
+        return re.sub(r'\(\s*('+year_list+r')\s*\)',replace,text)
+    numeric_source,numeric_target,unmatched=equivalent_durations(citation_spacing(normalize_percent(source)),citation_spacing(normalize_percent(target)))
     a = Counter(normalize(x) for x in NUMBER.findall(numeric_source))
     b = Counter(normalize(x) for x in NUMBER.findall(numeric_target))
     # Missing original decimal/sign/count is always an error. Only genuine extra
