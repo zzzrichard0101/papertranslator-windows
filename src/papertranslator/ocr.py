@@ -125,11 +125,21 @@ def page_blocks(page, mode='auto', engine=None, cancel=lambda: False):
         raise Cancelled()
     retained = [] if mode == 'force' else native
     native_spans = [s for b in native for l in b.get('lines', []) for s in l['spans'] if s['text'].strip()]
+    previous_top=None;previous_height=0
     for points, text, confidence, *_ in rows:
         if not text.strip():
             continue
         bbox = [min(p[0] for p in points)/scale, min(p[1] for p in points)/scale,
                 max(p[0] for p in points)/scale, max(p[1] for p in points)/scale]
+        reading_top=bbox[1]
+        # MuPDF's invisible OCR font can give a following line a slightly
+        # earlier top (especially a few enlarged words). Tesseract's logical
+        # order is retained for these overlapping rows; source boxes stay exact.
+        if (confidence is None and previous_top is not None and reading_top<=previous_top and
+            previous_top-reading_top<=max(previous_height,bbox[3]-bbox[1])*1.5):
+            reading_top=previous_top+.01
+            info['order_adjusted_lines']=info.get('order_adjusted_lines',0)+1
+        previous_top=reading_top;previous_height=bbox[3]-bbox[1]
         # Prefer precise native text over a second OCR rendition of the same region.
         matched=[s for s in native_spans if overlap(bbox,s['bbox'])>=.65]
         normalize=lambda value: re.sub(r'\W+','',value).casefold()
@@ -142,7 +152,8 @@ def page_blocks(page, mode='auto', engine=None, cancel=lambda: False):
         size = max(6., min(14., (bbox[3]-bbox[1])*.8))
         span = dict(text=text.strip(), bbox=bbox, size=size, flags=0, font='OCR',
                     extraction='ocr', ocr_confidence=confidence)
-        retained.append(dict(type=0, bbox=bbox, lines=[dict(bbox=bbox, spans=[span])]))
+        retained.append(dict(type=0, bbox=bbox, reading_top=reading_top,
+                             lines=[dict(bbox=bbox, spans=[span],reading_top=reading_top)]))
         info['lines'] += 1
         info['low_confidence_lines'] += confidence is not None and confidence < LOW_CONFIDENCE
         info['unscored_lines'] += confidence is None
@@ -161,4 +172,4 @@ def page_blocks(page, mode='auto', engine=None, cancel=lambda: False):
     if not rows and (chars < 20 or mode == 'force'):
         warnings.append('OCR에서 글자를 찾지 못했습니다. 빈 쪽·도형·흐린 스캔인지 원문을 확인하세요.')
     info['raster_size'] = [pix.width, pix.height]
-    return sorted(retained, key=lambda b: (b['bbox'][1], b['bbox'][0])), info, warnings
+    return sorted(retained, key=lambda b: (b.get('reading_top',b['bbox'][1]), b['bbox'][0])), info, warnings

@@ -12,7 +12,7 @@ from .storage import atomic_json, safe_title, sha256, read_json
 import hashlib
 from .ocr import LocalOCR, page_blocks, signature
 
-PARSER = 'pymupdf-logical-paragraph-ir-7-scan-margins'
+PARSER = 'pymupdf-logical-paragraph-ir-8-ocr-line-order'
 JOIN_WORDS=set('economic psychological paradigm practitioner practitioners particular individual individuals '
               'support supporting delivered delivery theories theory research professional professionals '
               'clinical objective subjective experience experiences observation observations systematic '
@@ -165,8 +165,9 @@ def analyze(source, selected, progress=lambda *_: None, ocr_mode='auto', cancel=
                     spans=[s for line in block['lines'] for s in line['spans']]
                     text='\n'.join(''.join(s['text'] for s in line['spans']) for line in block['lines'])
                     if protected_kind(text,spans):ordered.append(block)
-                    else:ordered.extend(dict(type=0,bbox=line['bbox'],lines=[line]) for line in block['lines'])
-                text_blocks=sorted(ordered,key=lambda b:(b['bbox'][1],b['bbox'][0]))
+                    else:ordered.extend(dict(type=0,bbox=line['bbox'],lines=[line],
+                        reading_top=line.get('reading_top',line['bbox'][1])) for line in block['lines'])
+                text_blocks=sorted(ordered,key=lambda b:(b.get('reading_top',b['bbox'][1]),b['bbox'][0]))
             units=paragraph_units(page,text_blocks)
             for unit in units:
                 unit['source_page_index']=index

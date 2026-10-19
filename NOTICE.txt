@@ -15,6 +15,8 @@ PyMuPDF / MuPDF: AGPL-3.0 or commercial license. This build uses the AGPL versio
 https://pymupdf.readthedocs.io/en/latest/about.html#license-and-copyright
 https://github.com/pymupdf/PyMuPDF/tree/1.26.7
 https://github.com/ArtifexSoftware/mupdf
+MuPDF version in the pinned wheel: 1.26.12.
+https://github.com/ArtifexSoftware/mupdf/tree/1.26.12
 
 PySide6 / Qt for Python: LGPL-3.0 / GPL / commercial, as specified per component.
 The executable uses dynamically linked libraries, provided as separate files.
@@ -39,6 +41,11 @@ License copy: docs/third-party/Tessdata-LICENSE.txt.
 OCR uses the Tesseract support in the installed MuPDF build. MuPDF's bundled
 third-party notices apply. Text extraction does not expose line confidence;
 the app records this as unscored and never reports invented confidence.
+MuPDF's OCR engine dependencies and their license copies:
+Tesseract (Apache-2.0), Artifex submodule a3a7bfaba8b1b575142f9752dba7540ac204f437;
+docs/third-party/Tesseract-engine-LICENSE.txt.
+Leptonica (BSD-2-Clause), Artifex submodule 0dc051249fa596016310e6d1509518fd34be4f63;
+docs/third-party/Leptonica-LICENSE.txt.
 
 RapidOCR / rapidocr-onnxruntime 1.4.4: Apache-2.0.
 Copyright (c) 2021 RapidOCR Authors / RapidAI. All rights reserved.

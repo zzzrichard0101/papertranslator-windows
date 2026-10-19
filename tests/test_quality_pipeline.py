@@ -80,6 +80,22 @@ def test_ocr_margin_specks_do_not_block_cross_page_sentence(tmp_path):
     assert sum(b.get('preserve_reason')=='ocr_margin_fragment' for b in ir['blocks'])==2
 
 
+def test_unscored_ocr_overlapping_font_boxes_keep_logical_line_order(tmp_path):
+    source=tmp_path/'scan.pdf'
+    with fitz.open() as document:document.new_page(width=600,height=800);document.save(source)
+    def recognize(pixels):
+        scale=pixels.shape[0]/800
+        def line(text,x,y,w,h):
+            return [[[x*scale,y*scale],[(x+w)*scale,y*scale],[(x+w)*scale,(y+h)*scale],[x*scale,(y+h)*scale]],text,None]
+        return [line('Systematic observations can increase confidence.',50,100,450,12),
+                line('The absence',400,99,100,26),
+                line('of observations must lead to caution.',50,99,450,40)]
+    ir=analyze(source,[0],ocr_mode='force',ocr_engine=recognize)
+    assert ir['blocks'][0]['source']==('Systematic observations can increase confidence. '
+                                      'The absence of observations must lead to caution.')
+    assert ir['pages'][0]['ocr']['order_adjusted_lines']==2
+
+
 def test_contents_references_entry_does_not_preserve_the_rest_of_the_book(tmp_path):
     source=tmp_path/'contents.pdf'
     with fitz.open() as document:
