@@ -104,6 +104,45 @@ def test_unscored_ocr_overlapping_font_boxes_keep_logical_line_order(tmp_path):
     assert ir['pages'][0]['ocr']['order_adjusted_lines']==2
 
 
+def test_alphabetic_scan_speck_above_running_header_is_not_body(tmp_path):
+    source=tmp_path/'scans.pdf'
+    with fitz.open() as document:
+        for _ in range(3):document.new_page(width=600,height=800)
+        document.save(source)
+    calls=[]
+    def recognize(pixels):
+        scale=pixels.shape[0]/800
+        def line(text,x,y,w):
+            return [[[x*scale,y*scale],[(x+w)*scale,y*scale],[(x+w)*scale,(y+10)*scale],[x*scale,(y+10)*scale]],text,None]
+        calls.append(True)
+        rows=[line('Synthetic Research Book',150,35,300)]
+        if len(calls)==1:return rows+[line('The methods and processes of',50,700,450)]
+        if len(calls)==2:return [line('EERE',250,1,60)]+rows+[line('research and evidence inform practice.',50,80,450)]
+        return rows+[line('A different paragraph ends here.',50,80,450)]
+    ir=analyze(source,[0,1,2],ocr_mode='force',ocr_engine=recognize)
+    joined=next(b for b in ir['blocks'] if len(b['source_page_indices'])>1)
+    assert joined['source']=='The methods and processes of research and evidence inform practice.'
+    assert next(b for b in ir['blocks'] if b['source']=='EERE')['preserve']
+
+
+def test_wide_scan_rule_read_as_letters_is_not_a_page_continuation(tmp_path):
+    source=tmp_path/'edge.pdf'
+    with fitz.open() as document:
+        document.new_page(width=600,height=800);document.new_page(width=600,height=800);document.save(source)
+    calls=[]
+    def recognize(pixels):
+        scale=pixels.shape[0]/800
+        def line(text,x,y,w,h):
+            return [[[x*scale,y*scale],[(x+w)*scale,y*scale],[(x+w)*scale,(y+h)*scale],[x*scale,(y+h)*scale]],text,None]
+        calls.append(True)
+        if len(calls)==1:return [line('The methods and processes of',50,700,450,12)]
+        return [line('EERE',250,1,160,7),line('research and evidence inform practice.',50,80,450,12)]
+    ir=analyze(source,[0,1],ocr_mode='force',ocr_engine=recognize)
+    joined=next(b for b in ir['blocks'] if len(b['source_page_indices'])>1)
+    assert joined['source']=='The methods and processes of research and evidence inform practice.'
+    assert next(b for b in ir['blocks'] if b['source']=='EERE')['preserve_reason']=='stretched_ocr_margin'
+
+
 def test_contents_references_entry_does_not_preserve_the_rest_of_the_book(tmp_path):
     source=tmp_path/'contents.pdf'
     with fitz.open() as document:

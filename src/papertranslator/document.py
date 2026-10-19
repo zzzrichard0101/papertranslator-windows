@@ -12,7 +12,7 @@ from .storage import atomic_json, safe_title, sha256, read_json
 import hashlib
 from .ocr import LocalOCR, page_blocks, signature
 
-PARSER = 'pymupdf-logical-paragraph-ir-8-ocr-line-order'
+PARSER = 'pymupdf-logical-paragraph-ir-9-header-edge-fragments'
 JOIN_WORDS=set('economic psychological paradigm practitioner practitioners particular individual individuals '
               'support supporting delivered delivery theories theory research professional professionals '
               'clinical objective subjective experience experiences observation observations systematic '
@@ -181,6 +181,12 @@ def analyze(source, selected, progress=lambda *_: None, ocr_mode='auto', cancel=
                 if (outer and unit.get('preserve_reason')=='symbol' and len(unit['source'])<=20 and
                     all(s.get('extraction')=='ocr' for s in unit['style_runs'])):
                     unit.update(kind='page_marker',preserve=True,preserve_reason='ocr_margin_fragment')
+                # A horizontal scan rule can be read as a few Latin letters.
+                # Its box is far wider than those letters at the measured height.
+                if (outer and unit['kind']!='page_marker' and len(unit['source'])<40 and
+                    (box[2]-box[0])/max(1,box[3]-box[1])>max(6,len(unit['source'].replace(' ',''))*1.2) and
+                    all(s.get('extraction')=='ocr' for s in unit['style_runs'])):
+                    unit.update(kind='page_marker',preserve=True,preserve_reason='stretched_ocr_margin')
                 scores=[s['ocr_confidence'] for s in unit['style_runs'] if isinstance(s.get('ocr_confidence'),(int,float))]
                 methods=set(s.get('extraction','native') for s in unit['style_runs'])
                 method='mixed' if len(methods)>1 else next(iter(methods))
@@ -225,6 +231,14 @@ def analyze(source, selected, progress=lambda *_: None, ocr_mode='auto', cancel=
                     unit.update(kind='heading',preserve=False)
                 elif reference_section and unit['kind'] not in metadata:
                     unit.update(kind='reference',preserve=True,preserve_reason=reference_section)
+            header_tops=[u['bbox'][1] for u in units if u['kind']=='running_header']
+            if header_tops:
+                header_top=min(header_tops)
+                for unit in units:
+                    if (unit['bbox'][3]<header_top and len(unit['source'])<40 and
+                        unit['bbox'][3]-unit['bbox'][1]<20 and
+                        all(s.get('extraction')=='ocr' for s in unit['style_runs'])):
+                        unit.update(kind='page_marker',preserve=True,preserve_reason='ocr_above_running_header')
             body=[u for u in units if u['kind'] not in metadata]
             prior=next((u for u in reversed(blocks) if u['kind'] not in metadata),None)
             if page_number and prior and body and continuation(prior,body[0],pages[page_number-1],page_info):
@@ -351,6 +365,9 @@ def flow_pdf(ir, records, path, title):
 
 def export(ir, records, original, folder, title, job, cancel=lambda: False):
     folder = Path(folder); folder.mkdir(parents=True)
+    # Retried/cached records may have been inserted later than their neighbours.
+    # Reports and quality records follow the IR, just like the PDF reading order.
+    records={block['id']:records[block['id']] for block in ir['blocks']}
     try:
         shutil.copyfile(original, folder/'Original.pdf')
         if sha256(folder/'Original.pdf') != job['source_sha256']:
