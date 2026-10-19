@@ -256,7 +256,7 @@ class Window(QMainWindow):
         self.detail.setText(f'{physical}문단 {completed}/{total} · 경과 {duration(elapsed)} · 번역 예상 {remaining_text}')
         if state.get('error'): self.result.setText(state['error'])
         elif state.get('quality_summary'):
-            q=state['quality_summary']; self.result.setText(f'번역 {q["translated"]}문단 · 원문 보존 실패 {q["failed"]}문단 · 경고 {q["warnings"]}문단 · 기계 의미 검수 {q.get("semantic_review_coverage",0):.0%}')
+            q=state['quality_summary']; self.result.setText(f'번역 {q["translated"]}문단 · 자동 검사 미통과 {q["failed"]}문단 · 경고 {q["warnings"]}문단 · 별도 의미 검수 {q.get("semantic_review_coverage",0):.0%}')
             if q.get('ocr_pages'):self.result.setText(self.result.text()+f'\nOCR {q["ocr_pages"]}쪽 · 낮은 인식 신뢰도 {q.get("ocr_low_confidence_lines",0)}줄 · 이미지 원문 대조 필요')
             if q.get('ocr_unscored_lines'):self.result.setText(self.result.text()+f' · 점수 미제공 {q["ocr_unscored_lines"]}줄')
             if q.get('refinement_processed'):self.result.setText(self.result.text()+f'\n다중 모델 교정 {q["refinement_processed"]}문단 · 후보 반영 {q.get("refinement_accepted",0)}문단 · 인간 승인 없음')
