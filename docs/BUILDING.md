@@ -58,7 +58,8 @@ OCR 모델과 config.yaml은 PyInstaller의 collect-data로 포함합니다. 빌
 `quality_gpu_integration.py --exe dist/PaperTranslator/PaperTranslator.exe`는 Hy-MT2와 Qwen을 순차 실행하고,
 합성 부정 오류의 교정과 초벌 캐시 재사용을 검사합니다. GPU 시험끼리 동시에 실행하지 마세요.
 `layout_gpu_integration.py --exe dist/PaperTranslator/PaperTranslator.exe`는 분리된 데이터 루트에서
-실제 OCR 단어 좌표·스캔 표 셀 6개·쪽 사이 문장 대응·원문 면 픽셀·캐시 재개를 검사합니다.
+합성 4쪽의 실제 OCR 단어 좌표·스캔 표 셀 6개·회전 도식 문구 6개·쪽 사이 문장 대응·
+전 출력 쪽 배치 검사·원문 면 픽셀·캐시 재개를 검사합니다.
 영어 LSTM 데이터는 공식 저장소의 고정 revision에서 받아 크기와 SHA256을 확인한 뒤
 `papertranslator/ocr_models`에 포함합니다. 모델 원본은 Git에 올리지 않습니다.
 

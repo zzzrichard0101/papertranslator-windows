@@ -9,6 +9,7 @@ VERSION='source-page-alignment-6-boundary-sentence'
 def page_sources(record):
     parts=[]
     for fragment in record.get('source_fragments',[]):
+        if not fragment['source'].strip():continue
         page=fragment['source_page_index']
         if parts and parts[-1]['page']==page:parts[-1]['source']+=' '+fragment['source']
         else:parts.append(dict(page=page,source=fragment['source']))

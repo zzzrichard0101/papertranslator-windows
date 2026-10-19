@@ -196,7 +196,7 @@ class Window(QMainWindow):
 
     def worker_finished(self,*_):
         state=read_json(self.folder/'state.json',{})
-        if state.get('status') not in {'completed_with_warnings','failed','cancelled'} and not (state.get('pid') and psutil.pid_exists(state['pid'])):
+        if state.get('status') not in {'review_required','completed_with_warnings','failed','cancelled'} and not (state.get('pid') and psutil.pid_exists(state['pid'])):
             state.update(status='interrupted',stage='중단됨 · 이어하기 가능',pid=None,eta_seconds=None)
             atomic_json(self.folder/'state.json',state)
         self.refresh_history(); self.refresh()
@@ -225,7 +225,7 @@ class Window(QMainWindow):
     def refresh_history(self):
         self.history.clear()
         files=sorted((root()/'jobs').glob('*/state.json'),key=lambda p:p.stat().st_mtime,reverse=True)
-        labels={'completed_with_warnings':'완료 · 확인 필요','failed':'실패','cancelled':'취소','interrupted':'중단'}
+        labels={'review_required':'검토 필요 · 검사 미통과','completed_with_warnings':'완료 · 확인 필요','failed':'실패','cancelled':'취소','interrupted':'중단'}
         for path in files[:60]:
             state=read_json(path,{})
             item=QListWidgetItem(state.get('title','논문')[:22]+'\n'+labels.get(state.get('status'),state.get('stage','대기')))
@@ -244,7 +244,7 @@ class Window(QMainWindow):
         self.start.setEnabled(not active and self.source is not None and bool(registry))
         self.cancel_btn.setEnabled(active)
         another_worker=bool(state.get('pid') and psutil.pid_exists(state['pid']))
-        self.resume.setEnabled(not active and not another_worker and bool(state) and state.get('status') in {'cancelled','interrupted','failed','queued','preparing','analyzing','translating','refining','cloud_reviewing','reviewing','aligning','typesetting','saving'})
+        self.resume.setEnabled(not active and not another_worker and bool(state) and state.get('status') in {'cancelled','interrupted','failed','queued','preparing','analyzing','translating','refining','cloud_reviewing','reviewing','fitting_labels','aligning','typesetting','saving'})
         self.retry.setEnabled(not active and bool(state.get('quality_summary',{}).get('failed')))
         has_output=bool(state.get('output')) and Path(state['output']).is_dir()
         for w in [self.open_btn,self.ko_btn,self.dual_btn,self.review_btn,self.obsidian_btn]: w.setEnabled(has_output)
@@ -253,7 +253,7 @@ class Window(QMainWindow):
             self.detail.setText('경과 —  /  남은 시간 —'); self.result.setText('결과 폴더에 Papers/<제목>이 새로 만들어집니다.'); return
         self.stage.setText(state.get('stage','대기'))
         total=state.get('total',0); completed=state.get('completed',0)
-        if active and state.get('status') in {'preparing','analyzing','refining','cloud_reviewing','reviewing','aligning','typesetting','saving'}:
+        if active and state.get('status') in {'preparing','analyzing','refining','cloud_reviewing','reviewing','fitting_labels','aligning','typesetting','saving'}:
             self.bar.setRange(0,0)
         else:
             self.bar.setRange(0,max(total,1)); self.bar.setValue(completed)
@@ -271,6 +271,8 @@ class Window(QMainWindow):
             if q.get('refinement_processed'):self.result.setText(self.result.text()+f'\n다중 모델 교정 {q["refinement_processed"]}문단 · 후보 반영 {q.get("refinement_accepted",0)}문단 · 인간 승인 없음')
             if q.get('output_layout')=='source_position':
                 self.result.setText(self.result.text()+f'\n원문 위치 대응 · 보충면 {q.get("layout_overflow",0)}쪽 · 대응 추정 {q.get("layout_proposed",0)}문단 · 미확정 {q.get("layout_unresolved",0)}문단')
+            if (q.get('layout_validation') or {}).get('status')=='review_required':
+                self.result.setText(self.result.text()+'\n배치 검사 미통과 · 문단 검토에서 해당 원본 쪽을 확인하세요.')
         else: self.result.setText('문단별 기록 자동 저장 · 재개 시 완료된 문단 재사용')
 
     def poll_gpu(self):

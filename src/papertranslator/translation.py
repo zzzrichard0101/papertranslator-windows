@@ -3,7 +3,7 @@ from .backend import Cancelled
 from .quality import check,make_prompt,protect,restore
 from .storage import atomic_json
 
-BLOCKING={'numbers','quantity','empty','untranslated','new_markup','embedded_han','foreign_script','economic_depression','expansion'}
+BLOCKING={'numbers','quantity','session_frequency','undertranslation','placeholder','adhd_term','empty','untranslated','new_markup','embedded_han','foreign_script','economic_depression','expansion'}
 
 
 def blocking(issues):

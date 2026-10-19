@@ -307,3 +307,23 @@ def test_invalid_edit_is_retained_and_does_not_replace_draft(tmp_path):
     assert record['target']==draft and not record['refinement']['accepted']
     assert record['refinement']['decision']=='uncertain'
     assert (tmp_path/'responses/edit-bad-edit.json').is_file()
+
+
+def test_rejected_edit_is_retried_with_feedback_before_being_left_unresolved(tmp_path):
+    record=dict(id='retry-edit',source='Research evidence does not replace clinical judgement. '*3,
+                target='연구 근거는 임상 판단을 대체한다.',status='translated',issues=[])
+    prompts=[]
+    class Backend:
+        def __init__(self,*args,**kwargs):pass
+        def __enter__(self):return self
+        def __exit__(self,*args):pass
+        def start(self,progress):pass
+        def translate(self,prompt,**kwargs):
+            prompts.append(prompt)
+            return dict(text=json.dumps(revision(source_evidence='invented quote') if len(prompts)==1 else revision()),seconds=1)
+    run({'retry-edit':record},dict(blocks=[dict(id='retry-edit')]),dict(mode='ensemble',editor={'id':'editor'}),
+        tmp_path,'general',Backend,lambda:None,lambda _:None,lambda:False)
+    assert len(prompts)==2 and 'previous candidate was rejected' in prompts[1]
+    assert record['refinement']['accepted'] and len(record['refinement']['attempts'])==2
+    assert not record['issues']
+    assert (tmp_path/'responses/edit-retry-edit-attempt2.json').is_file()

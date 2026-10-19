@@ -4,8 +4,8 @@ import re
 import secrets
 from .quantities import equivalent_durations,equivalent_fractions
 
-VERSION = 'quality-15'
-PROMPT_VERSION = 'contextual-paragraph-9'
+VERSION = 'quality-17'
+PROMPT_VERSION = 'contextual-paragraph-11'
 YEAR_REFERENCE=r'(?:1[5-9]|20)\d{2}[a-f]?'
 YEAR_LOCATOR=YEAR_REFERENCE+r'(?:\s*[,;]\s*'+YEAR_REFERENCE+r')*(?::\s*\d+(?:[-–]\d+)?)?'
 AUTHOR=r"[A-Z][A-Za-z’'-]+(?:\s+(?:and|&)\s+[A-Z][A-Za-z’'-]+)?(?:\s+et al\.)?"
@@ -64,6 +64,9 @@ def restore(text, mapping):
 
 
 TERMS = [
+    ('Attention Deficit Hyperactivity Disorder','주의력결핍 과잉행동장애(ADHD)'),
+    ('significant drop-out rate','상당한 중도탈락률(이 문맥에서는 통계적 유의성으로 바꾸지 않음)'),
+    ('weekly sessions','주 1회 세션(앞의 숫자는 전체 회기 수이며 주당 빈도가 아님)'),
     ('economic uncertainty and depression','경제적 불확실성과 경기 침체'),
     ('economic depression','경제 불황'),
     ('evidence-based practice','근거 기반 실천'),
@@ -156,6 +159,18 @@ def check(source, target):
     errors = []
     if not target.strip():
         return [dict(code='empty', severity='critical', message='번역 결과가 비어 있습니다.')]
+    if '~' not in source and re.search(r'~\s*(?:을|를|이|가|에|은|는)',target):
+        errors.append(dict(code='placeholder',severity='major',message='번역에 미완성 자리표시자가 있어 다시 번역합니다.'))
+    if re.search(r'\bADHD\b|Attention\s+Deficit\s+Hyperactivity',source,re.I) and '공격성장애' in target:
+        errors.append(dict(code='adhd_term',severity='major',message='ADHD의 과잉행동을 공격성으로 옮겼는지 재검사합니다.'))
+    if len(re.findall(r'[A-Za-z]',source))>240 and len(re.findall(r'[가-힣A-Za-z]',target))<len(re.findall(r'[A-Za-z]',source))*.22:
+        errors.append(dict(code='undertranslation',severity='major',message='원문에 비해 번역이 지나치게 짧아 내용 누락을 재검사합니다.'))
+    # A count of weekly sessions is a total, not the weekly frequency. Only
+    # compare explicit numeric frequencies when the source says once/weekly;
+    # e.g. "twice weekly" and "six sessions per week" remain eligible wording.
+    if re.search(r'\bweekly\s+(?:\w+[ -]){0,4}(?:sessions?|therapy|training)\b',source,re.I) and not re.search(r'\b(?:twice|thrice|\d+|two|three|four|five|six)\s+(?:times?\s+)?weekly\b',source,re.I):
+        if any(int(n)>1 for n in re.findall(r'주\s*(?:당\s*)?(\d+)\s*회',target)):
+            errors.append(dict(code='session_frequency',severity='major',message='전체 회기 수를 주당 횟수로 바꾸지 않았는지 재검사합니다.'))
     normalize = lambda s: s.replace('−', '-').replace(' ', '')
     def normalize_percent(value):
         value=re.sub(r'(\d+(?:\.\d+)?)\s*(?:per\s+cent|percent)\b',r'\1%',value,flags=re.I)
@@ -205,7 +220,8 @@ def check(source, target):
         errors.append(dict(code='added_random', severity='critical', message='원문에 없는 무작위 배정 가능성'))
     if re.search(r'\beconomic\s+(?:uncertainty\s+and\s+)?depression\b',source,re.I) and '우울증' in target:
         errors.append(dict(code='economic_depression',severity='major',message='경제 맥락의 depression을 임상적 우울증으로 옮겼을 가능성'))
-    if re.search(r'\bnot\b|\bno\b|\bnever\b|\bwithout\b', source, re.I) and not re.search(r'않|없|아니|아닌|아닙|못|비유의|배제|제외|말고|마라|안\s|금지|마십', target):
+    negative_source=re.sub(r'\bwhether\s+or\s+not\b','',source,flags=re.I) if re.search(r'여부|는지|는가',target) else source
+    if re.search(r'\bnot\b|\bno\b|\bnever\b|\bwithout\b', negative_source, re.I) and not re.search(r'않|없|아니|아닌|아닙|못|비유의|배제|제외|말고|마라|안\s|금지|마십', target):
         errors.append(dict(code='negation', severity='major', message='부정 표현이 보존됐는지 확인하세요.'))
     if re.search(r'\baunts?\b', source, re.I) and '삼촌' in target:
         errors.append(dict(code='kinship', severity='critical', message='여성 친족이 남성 친족으로 바뀔 가능성'))

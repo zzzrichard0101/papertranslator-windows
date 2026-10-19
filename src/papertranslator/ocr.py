@@ -9,7 +9,7 @@ from .backend import Cancelled
 from .storage import sha256
 from .ocr_assets import data_directory, SHA256 as ENGLISH_SHA256
 
-VERSION = 'english-lstm-best-rapid-fallback-3-word-boxes'
+VERSION = 'english-lstm-best-rapid-fallback-6-rules-forms-diagrams'
 MODES = {'auto', 'off', 'force'}
 MODEL_HASHES = {
     'ch_PP-OCRv4_det_infer.onnx': 'd2a7720d45a54257208b1e13e36a8479894cb74155a5efe29462512d42f49da9',
@@ -57,9 +57,20 @@ class LocalOCR:
                                det_limit_type='max', text_score=0.)
         return self.engine
 
-    def __call__(self, pixels):
+    def _english_rows(self, pixels):
         if self.english:
             height,width=pixels.shape[:2]
+            # Long scan/table rules confuse OCR into invented words. Remove
+            # them only in the recognition copy, retaining source coordinates.
+            if min(height,width)>500:
+                import cv2
+                import numpy as np
+                gray=cv2.cvtColor(pixels,cv2.COLOR_BGR2GRAY)
+                if np.mean(gray>180)>.65:
+                    ink=cv2.threshold(gray,150,255,cv2.THRESH_BINARY_INV)[1]
+                    rules=cv2.morphologyEx(ink,cv2.MORPH_OPEN,np.ones((1,max(100,width//8)),np.uint8))
+                    rules|=cv2.morphologyEx(ink,cv2.MORPH_OPEN,np.ones((max(100,height//10),1),np.uint8))
+                    pixels=pixels.copy();pixels[cv2.dilate(rules,np.ones((3,3),np.uint8))>0]=255
             pix=fitz.Pixmap(fitz.csRGB,width,height,pixels[:,:,::-1].copy().tobytes(),False)
             pix.set_dpi(220,220)
             data=pix.pdfocr_tobytes(language='eng',tessdata=str(self.english))
@@ -68,13 +79,32 @@ class LocalOCR:
                 page=document[0];groups={}
                 for word in page.get_text('words'):
                     groups.setdefault((word[5],word[6]),[]).append(word)
-                for words in groups.values():
+                for (block,line),words in groups.items():
                     words.sort(key=lambda w:w[7])
                     text=' '.join(w[4] for w in words)
                     x0=min(w[0] for w in words)*220/72;y0=min(w[1] for w in words)*220/72
                     x1=max(w[2] for w in words)*220/72;y1=max(w[3] for w in words)*220/72
                     rows.append([[[x0,y0],[x1,y0],[x1,y1],[x0,y1]],text,None,
-                                 dict(words=[dict(text=w[4],bbox=[v*220/72 for v in w[:4]]) for w in words])])
+                                 dict(block=block,words=[dict(text=w[4],bbox=[v*220/72 for v in w[:4]]) for w in words])])
+            return rows
+        return []
+
+    def __call__(self,pixels):
+        rows=self._english_rows(pixels)
+        if rows:
+            from .orientation import recover,recover_upright,quality
+            import numpy as np
+            if np.mean(np.mean(pixels,axis=2)<90)>.55:
+                inverted=self._english_rows(255-pixels)
+                if quality(inverted)[1]>quality(rows)[1]*1.08 and quality(inverted)[0]>.65:
+                    rows=inverted
+                    for row in rows:row[3]['inverted']=True
+            rows=recover(pixels,rows,self._english_rows)
+            if not any(len(row)>3 and row[3].get('rotation') for row in rows):
+                from .forms import recover as recover_form
+                rows=recover_form(pixels,rows,self._english_rows)
+                if not any(len(row)>3 and row[3].get('layout_kind') for row in rows):
+                    rows=recover_upright(pixels,rows,self._english_rows)
             if any(re.search(r'\b[A-Za-z]{3,}\b',r[1]) for r in rows):return rows
         result, _ = self._rapid()(pixels)
         return result or []
@@ -152,11 +182,17 @@ def page_blocks(page, mode='auto', engine=None, cancel=lambda: False):
             info['duplicate_lines'] += 1
             continue
         confidence = float(confidence) if confidence is not None else None
+        meta=extra[0] if extra and isinstance(extra[0],dict) else {}
+        rotation=meta.get('rotation',0)
+        diagram_label=meta.get('diagram_label',False)
+        layout_kind=meta.get('layout_kind')
+        region_bbox=[v/scale for v in meta['region_bbox']] if meta.get('region_bbox') else None
+        erase_patch={**meta['erase_patch'],'bbox':[v/scale for v in meta['erase_patch']['bbox']]} if meta.get('erase_patch') else None
         size = max(6., min(14., (bbox[3]-bbox[1])*.8))
         span = dict(text=text.strip(), bbox=bbox, size=size, flags=0, font='OCR',
-                    extraction='ocr', ocr_confidence=confidence)
+                    extraction='ocr', ocr_confidence=confidence,rotation=rotation,diagram_label=diagram_label,region_bbox=region_bbox,erase_patch=erase_patch)
         retained.append(dict(type=0, bbox=bbox, reading_top=reading_top,
-                             lines=[dict(bbox=bbox, spans=[span],reading_top=reading_top,
+                             lines=[dict(bbox=bbox, spans=[span],reading_top=reading_top,rotation=rotation,diagram_label=diagram_label,layout_kind=layout_kind,region_bbox=region_bbox,erase_patch=erase_patch,
                                          layout_words=[dict(text=w['text'],bbox=[v/scale for v in w['bbox']])
                                                        for w in (extra[0].get('words',[]) if extra and isinstance(extra[0],dict) else [])])]))
         info['lines'] += 1
@@ -168,6 +204,8 @@ def page_blocks(page, mode='auto', engine=None, cancel=lambda: False):
         warnings.append(f'OCR 낮은 신뢰도 {info["low_confidence_lines"]}줄: 숫자·이름·수식을 특히 확인하세요.')
     if info['unscored_lines']:
         warnings.append('영어 LSTM OCR은 인식 확률을 제공하지 않습니다. 점수 없음은 정확하다는 뜻이 아닙니다.')
+    if any(len(row)>3 and row[3].get('rotation') for row in rows):info['oriented_labels']=True
+    if any(len(row)>3 and row[3].get('inverted') for row in rows):info['inverted_ocr']=True
     detected=' '.join(row[1] for row in rows)
     letters=sum(c.isalpha() for c in detected)
     word_letters=sum(len(word) for word in re.findall(r'\b[A-Za-z]{3,}\b',detected))

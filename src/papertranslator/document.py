@@ -13,7 +13,7 @@ import hashlib
 from .ocr import LocalOCR, page_blocks, signature
 from .regions import separate_tables,slice_fragment
 
-PARSER = 'pymupdf-logical-paragraph-ir-12-source-regions'
+PARSER = 'pymupdf-logical-paragraph-ir-15-margin-rules'
 JOIN_WORDS=set('economic psychological paradigm practitioner practitioners particular individual individuals '
               'support supporting delivered delivery theories theory research professional professionals '
               'clinical objective subjective experience experiences observation observations systematic '
@@ -45,7 +45,7 @@ def protected_kind(text, spans):
                      r'import\s+[\w.]+\s*$|function\s+\w+\s*\(|SELECT\s+.+\s+FROM\s)',text,re.M)
     if syntax or (mono>=max(4,length*.7) and re.search(r'[=():{};]|^\s*return\b',text,re.M)):
         return 'code'
-    if sum(c.isalpha() for c in text)<4:return 'symbol'
+    if sum(c.isalpha() for c in text)<4 and not re.fullmatch(r'Yes|No',text.strip(),re.I):return 'symbol'
     if len(text)<220 and re.search(r'[∑∫√]|[μσ]\s*[=±]',text) and len(re.findall(r'\b[A-Za-z]{3,}\b',text))<4:
         return 'formula'
     return None
@@ -67,7 +67,7 @@ def paragraph_units(page, text_blocks=None):
         bbox=[min(l['bbox'][0] for l in current),min(l['bbox'][1] for l in current),
               max(l['bbox'][2] for l in current),max(l['bbox'][3] for l in current)]
         spans=[s for l in current for s in l['spans']]
-        units.append(dict(source=text,raw_source=raw,bbox=bbox,layout_lines=layout_lines,kind=current[0]['kind'],preserve=False,style_runs=spans))
+        units.append(dict(source=text,raw_source=raw,bbox=bbox,layout_lines=layout_lines,kind=current[0]['kind'],preserve=False,style_runs=spans,rotation=current[0].get('rotation',0),region_bbox=current[0].get('region_bbox'),erase_patch=current[0].get('erase_patch')))
         current=[]
     for block in (page.get_text('dict',sort=True)['blocks'] if text_blocks is None else text_blocks):
         if block['type']!=0:continue
@@ -88,14 +88,19 @@ def paragraph_units(page, text_blocks=None):
             count=sum(len(s['text']) for s in visible)
             bold=sum(len(s['text']) for s in visible if s.get('flags',0)&16)
             heading=len(text)<180 and (bold>count*.75 or max(s['size'] for s in visible)>=16)
-            kind='heading' if heading else 'paragraph'
+            heading|=bool(re.match(r'^\s*(?:Table|Figure|Box)\s+\d+(?:\.\d+)?(?:\s|$)',text,re.I))
+            rotation=line.get('rotation',0)
+            diagram_label=bool(rotation or line.get('diagram_label'))
+            isolated=diagram_label or bool(line.get('layout_kind'))
+            if isolated:flush();previous=None
+            kind=line.get('layout_kind') or ('diagram_label' if diagram_label else ('list_label' if re.match(r'^\s*Level\s*\d+\s*$',text,re.I) else ('heading' if heading else 'paragraph')))
             gap=previous and line['bbox'][1]-previous['bbox'][3]>max(s['size'] for s in visible)*.65
             bullet=bool(re.match(r'^\s*[•●▪◦]',text))
             numbered=bool(re.match(r'^\s*\d+[.)]\s',text))
             if numbered and current and not gap:
                 # A wrapped age/value such as "age / 31. She ..." is not a list.
                 numbered=bool(re.search(r'[.!?][\"\x27’”]*\s*$',current[-1]['text'])) or bool(re.match(r'^\s*\d+[.)]\s',current[0]['text']))
-            bullet|=numbered
+            bullet|=numbered or bool(re.match(r'^\s*Level\s*\d+\s+',text,re.I))
             column_jump=previous and (line['bbox'][1]<previous['bbox'][1]-max(25,2*(previous['bbox'][3]-previous['bbox'][1])) or
                 (abs(line['bbox'][1]-previous['bbox'][1])<10 and
                  (line['bbox'][0]>previous['bbox'][2]+12 or line['bbox'][2]<previous['bbox'][0]-12)))
@@ -105,8 +110,9 @@ def paragraph_units(page, text_blocks=None):
                 inset=line['bbox'][0]-left
                 indented=(width>150 and 4<inset<35 and previous['bbox'][2]-previous['bbox'][0]<width*.95 and
                           bool(re.search(r'[.!?][\"\x27’”)]*\s*$',current[-1]['text'])))
-            if current and (kind!=current[0]['kind'] or heading or bullet or gap or column_jump or indented):flush()
-            current.append(dict(text=text,bbox=line['bbox'],spans=spans,kind=kind));previous=line
+            if current and (kind!=current[0]['kind'] or heading or bullet or gap or column_jump or indented or (current[-1]['text'].rstrip().endswith(';') and len(current[-1]['text'])<100 and len(text)<100)):flush()
+            current.append(dict(text=text,bbox=line['bbox'],spans=spans,kind=kind,rotation=rotation,region_bbox=line.get('region_bbox'),erase_patch=line.get('erase_patch')));previous=line
+            if isolated:flush();previous=None
     flush()
     return units
 
@@ -116,6 +122,7 @@ def continuation(left,right,left_page,right_page):
     if right_page['source_page_index']!=left_page['source_page_index']+1:return False
     a=left['source'].rstrip();b=right['source'].lstrip()
     if not a or not b or re.search(r'[.!?。！？…][\"\x27’”\])]*$',a):return False
+    if re.match(r'^(?:Table|Figure|Box)\s+\d',b,re.I):return False
     if re.match(r'[•●▪◦]|\d+[.)]\s',b):return False
     # An unpunctuated stage note after a finished sentence is not a continuation.
     prefix=re.sub(r'\s*[([][^()\[\]]{0,180}[)\]]\s*$','',a)
@@ -125,7 +132,8 @@ def continuation(left,right,left_page,right_page):
     last=left['fragments'][-1]
     if last['source_page_index']!=left_page['source_page_index']:return False
     # Require a real physical boundary, not a short caption ending mid-page.
-    if last['bbox'][3]<left_page['height']*.68 or right['bbox'][1]>right_page['height']*.3:return False
+    if last['bbox'][3]<left_page['height']*.68:return False
+    if right['bbox'][1]>right_page['height']*.3 and not right_page.get('structured_above_body'):return False
     return True
 
 
@@ -182,6 +190,15 @@ def analyze(source, selected, progress=lambda *_: None, ocr_mode='auto', cancel=
                 text_blocks=sorted(ordered,key=lambda b:(b.get('reading_top',b['bbox'][1]),b['bbox'][0]))
             body_blocks,table_cells,regions=separate_tables(page,text_blocks,scanned=bool(extraction['lines']))
             page_info['table_regions']=regions
+            # Captions are independent translation units even when OCR supplies
+            # no bold font. Include the adjacent title on the same printed row.
+            lines=[l for b in body_blocks if b.get('type')==0 for l in b.get('lines',[])]
+            caption_rows=[l['bbox'][1] for l in lines if re.match(r'^\s*(?:Table|Figure|Box)\s+\d',
+                ''.join(s['text'] for s in l['spans']),re.I)]
+            for line in lines:
+                if any(abs(line['bbox'][1]-top)<3 for top in caption_rows) or re.match(r'^\s*Source\s*:', ''.join(s['text'] for s in line['spans']),re.I):
+                    line['layout_kind']='caption'
+            page_info['structured_above_body']=bool(regions or any(l.get('diagram_label') or l.get('rotation') for l in lines))
             units=paragraph_units(page,body_blocks)
             for cell in table_cells:
                 cell_units=paragraph_units(page,[dict(type=0,lines=cell['lines'],bbox=cell['bbox'])])
@@ -204,10 +221,14 @@ def analyze(source, selected, progress=lambda *_: None, ocr_mode='auto', cancel=
                 if (outer and unit.get('preserve_reason')=='symbol' and len(unit['source'])<=20 and
                     all(s.get('extraction')=='ocr' for s in unit['style_runs'])):
                     unit.update(kind='page_marker',preserve=True,preserve_reason='ocr_margin_fragment')
+                if (outer and len(unit['source'])<40 and re.search(r'[—_=\-]{2,}',unit['source']) and
+                    sum(c.isalpha() for c in unit['source'])<=10 and
+                    all(s.get('extraction')=='ocr' for s in unit['style_runs'])):
+                    unit.update(kind='page_marker',preserve=True,preserve_reason='ocr_margin_rule')
                 # A horizontal scan rule can be read as a few Latin letters.
                 # Its box is far wider than those letters at the measured height.
                 if (outer and unit['kind']!='page_marker' and len(unit['source'])<40 and
-                    (box[2]-box[0])/max(1,box[3]-box[1])>max(6,len(unit['source'].replace(' ',''))*1.2) and
+                    (box[2]-box[0])/max(1,box[3]-box[1])>max(6,sum(c.isalpha() for c in unit['source'])*1.2) and
                     all(s.get('extraction')=='ocr' for s in unit['style_runs'])):
                     unit.update(kind='page_marker',preserve=True,preserve_reason='stretched_ocr_margin')
                 scores=[s['ocr_confidence'] for s in unit['style_runs'] if isinstance(s.get('ocr_confidence'),(int,float))]
@@ -215,7 +236,7 @@ def analyze(source, selected, progress=lambda *_: None, ocr_mode='auto', cancel=
                 method='mixed' if len(methods)>1 else next(iter(methods))
                 unit['fragments']=[dict(source_page_index=index,bbox=unit['bbox'],source=unit['source'],
                                         raw_source=unit.get('raw_source',unit['source']),extraction=method,ocr_confidence_min=min(scores) if scores else None,
-                                        layout_lines=unit.get('layout_lines',[]),cell_bbox=unit.get('cell_bbox'))]
+                                        layout_lines=unit.get('layout_lines',[]),cell_bbox=unit.get('cell_bbox'),rotation=unit.get('rotation',0),region_bbox=unit.get('region_bbox'),erase_patch=unit.get('erase_patch'))]
             extracted.append(units)
             pages.append(page_info)
         # Repeated running titles are metadata; do not let them sever sentences
@@ -227,7 +248,7 @@ def analyze(source, selected, progress=lambda *_: None, ocr_mode='auto', cancel=
             return None
         keys=Counter(key for units,page in zip(extracted,pages) for key in
                      set(filter(None,(header_key(u,page) for u in units))))
-        metadata={'page_marker','running_header'}
+        metadata={'page_marker','running_header','caption'}
         for page_number,(units,page_info) in enumerate(zip(extracted,pages)):
             page_text=' '.join(unit['source'] for unit in units)
             labels=[unit['source'].strip().casefold() for unit in units if unit['bbox'][1]<page_info['height']*.3]
@@ -248,7 +269,7 @@ def analyze(source, selected, progress=lambda *_: None, ocr_mode='auto', cancel=
                     page_info['warnings'].append('색인 형식과 다음 쪽 제목을 확인해 항목을 원문으로 보존했습니다. 복잡한 열은 원본을 보세요.')
             for unit in units:
                 key=header_key(unit,page_info)
-                if key and keys[key]>=3:
+                if key and (keys[key]>=2 or key in {'foreword','introduction','contents'} or any(key.startswith(k) and len(k)>=len(key)*.55 for k,n in keys.items() if n>=3 and len(k)>=15)):
                     unit.update(kind='running_header',preserve=True,preserve_reason='repeated_running_title')
                 label=unit['source'].strip().casefold()
                 if reference_section and label in {'references','bibliography','index'} and unit['kind']!='running_header':
@@ -272,9 +293,10 @@ def analyze(source, selected, progress=lambda *_: None, ocr_mode='auto', cancel=
                             box[0]>=h['bbox'][0] and box[2]<=h['bbox'][2] for h in headers)):
                         unit.update(kind='page_marker',preserve=True,preserve_reason='ocr_overlapping_running_header')
             body=[u for u in units if u['kind'] not in metadata]
+            first_body=next((u for u in body if u['kind'] not in {'table_cell','diagram_label'}),None)
             prior=next((u for u in reversed(blocks) if u['kind'] not in metadata),None)
-            if page_number and prior and body and continuation(prior,body[0],pages[page_number-1],page_info):
-                first=body[0]
+            if page_number and prior and first_body and continuation(prior,first_body,pages[page_number-1],page_info):
+                first=first_body
                 combined,removed=join_lines(prior['source'],first['source'])
                 if removed:prior['fragments'][-1]['source']=prior['fragments'][-1]['source'][:-1]
                 prior['source']=combined;prior['fragments']+=first['fragments']
@@ -290,6 +312,7 @@ def analyze(source, selected, progress=lambda *_: None, ocr_mode='auto', cancel=
             for part,segment in enumerate([source] if block['preserve'] else segments(source)):
                 start=source.find(segment,cursor);end=start+len(segment);cursor=end
                 fragments=[slice_fragment(f,max(a,start)-a,min(b,end)-a) for a,b,f in spans if a<end and b>start]
+                fragments=[f for f in fragments if f['source'].strip()]
                 indices=list(dict.fromkeys(f['source_page_index'] for f in fragments))
                 bid=f'p{indices[0]+1}-u{number}-s{part}'
                 item={k:v for k,v in block.items() if k not in {'fragments','source','source_page_index'}}
@@ -455,12 +478,16 @@ def export(ir, records, original, folder, title, job, cancel=lambda: False):
                      quality_policy=job.get('quality_policy',{'mode':'legacy'}),
                      refinement_processed=sum(bool(r.get('refinement')) for r in records.values()),
                      refinement_accepted=sum(r.get('refinement',{}).get('accepted',False) for r in records.values()),
+                     layout_compaction_processed=sum(bool(r.get('layout_compaction')) for r in records.values()),
+                     layout_compaction_accepted=sum(r.get('layout_compaction',{}).get('accepted',False) for r in records.values()),
+                     source_gap_paragraphs=sum(bool(r.get('source_gaps')) for r in records.values()),
                      cloud_review_completed=sum(r.get('cloud_review',{}).get('status')=='completed' for r in records.values()),
                      cloud_review_attempted=sum(bool(r.get('cloud_review',{}).get('attempted')) for r in records.values()),
                      connected_paragraphs=sum(len(r.get('source_page_indices',[]))>1 for r in records.values()),
                      failed_candidate_paragraphs=sum(r['status']=='failed' and bool(r.get('candidate')) for r in records.values()),
                      assistant_edited_paragraphs=sum(bool(r.get('assistant_post_edit')) for r in records.values()),
                      limitations=ir['limitations'], pages=ir['pages'], records=list(records.values()))
+        quality['delivery_status']='review_required' if failed or (layout and layout['validation']['status']!='passed') else 'generated_with_machine_checks'
         atomic_json(folder/'Quality.json', quality)
         sections=[]
         for r in records.values():

@@ -20,7 +20,8 @@ def table_regions(page,scanned=False):
         scale=min(1.5,1800/max(page.rect.width,page.rect.height))
         pix=page.get_pixmap(matrix=fitz.Matrix(scale,scale),colorspace=fitz.csGRAY,alpha=False)
         gray=np.frombuffer(pix.samples,dtype=np.uint8).reshape(pix.height,pix.width)
-        bw=cv2.adaptiveThreshold(gray,255,cv2.ADAPTIVE_THRESH_MEAN_C,cv2.THRESH_BINARY_INV,21,12)
+        polarity=cv2.THRESH_BINARY if np.mean(gray<90)>.55 else cv2.THRESH_BINARY_INV
+        bw=cv2.adaptiveThreshold(gray,255,cv2.ADAPTIVE_THRESH_MEAN_C,polarity,21,12)
         horizontal=cv2.morphologyEx(bw,cv2.MORPH_OPEN,cv2.getStructuringElement(cv2.MORPH_RECT,(max(25,pix.width//25),1)))
         vertical=cv2.morphologyEx(bw,cv2.MORPH_OPEN,cv2.getStructuringElement(cv2.MORPH_RECT,(1,max(20,pix.height//35))))
         mask=cv2.dilate(horizontal|vertical,np.ones((3,3),np.uint8))
@@ -37,15 +38,18 @@ def table_regions(page,scanned=False):
                         cells.append([cx/scale,cy/scale,(cx+cw)/scale,(cy+ch)/scale])
                 columns={round((c[0]+c[2])/2/12) for c in cells}
                 rows={round((c[1]+c[3])/2/12) for c in cells}
-                if len(cells)>=4 and len(columns)>=2 and len(rows)>=2:
+                coverage=sum((c[2]-c[0])*(c[3]-c[1])*scale*scale for c in cells)/max(1,width*height)
+                if len(cells)>=4 and len(columns)>=2 and len(rows)>=2 and coverage>=.45:
                     regions.append(dict(bbox=[x/scale,y/scale,(x+width)/scale,(y+height)/scale],
                                         cells=sorted(cells,key=lambda c:(c[1],c[0])),method='scanned_ruled'))
     return regions
 
 
 def separate_tables(page,blocks,scanned=False):
+    if any(l.get('rotation') or l.get('diagram_label') or l.get('layout_kind') for b in blocks for l in b.get('lines',[])):return blocks,[],[]
     regions=table_regions(page,scanned)
     if not regions:regions=borderless_numeric_table(page,blocks)
+    if not regions:regions=borderless_comparison_table(page,blocks)
     cells=[]
     for table_index,table in enumerate(regions):
         for cell_index,box in enumerate(table['cells']):
@@ -78,6 +82,42 @@ def separate_tables(page,blocks,scanned=False):
             else:kept.append(line)
         if kept:remaining.append({**block,'lines':kept})
     return remaining,[c for c in cells if c['lines']],regions
+
+
+def borderless_comparison_table(page,blocks):
+    """Two-column qualitative/quantitative comparisons with a caption and source."""
+    lines=[l for b in blocks if b.get('type')==0 for l in b['lines']]
+    text=lambda l:' '.join(s['text'] for s in l['spans']).strip()
+    regions=[]
+    for left_header in [l for l in lines if text(l).casefold()=='qualitative']:
+        right=next((l for l in lines if text(l).casefold()=='quantitative' and abs(l['bbox'][1]-left_header['bbox'][1])<4),None)
+        if not right:continue
+        y=left_header['bbox'][1]
+        captions=[l for l in lines if re.match(r'^Table\s+\d',text(l),re.I) and 0<y-l['bbox'][1]<35]
+        endings=[l for l in lines if re.match(r'^Source\s*:',text(l),re.I) and y<l['bbox'][1]<y+page.rect.height*.65]
+        if not captions or not endings:continue
+        end=min(l['bbox'][1] for l in endings);left=left_header['bbox'][0]-2;middle=right['bbox'][0]-8
+        words=[w for l in lines if y<=l['bbox'][1]<end for w in l.get('layout_words',[])]
+        if not words:continue
+        left_words=sorted([w for w in words if w['bbox'][0]<middle],key=lambda w:(w['bbox'][1],w['bbox'][0]))
+        bands=[]
+        for word in left_words:
+            if bands and abs(word['bbox'][1]-bands[-1][0]['bbox'][1])<3:bands[-1].append(word)
+            else:bands.append([word])
+        starts=[];multiline=False
+        for band in bands:
+            value=' '.join(w['text'] for w in sorted(band,key=lambda w:w['bbox'][0]));x=min(w['bbox'][0] for w in band)
+            if len(value.strip())<3:continue
+            new=not starts or value.startswith(('Methods:','Research genres:')) or (not multiline and x<left+8)
+            if new:starts.append(band[0]['bbox'][1]-1)
+            if value.startswith(('Methods:','Research genres:')):multiline=True
+        if len(starts)<5:continue
+        # A candidate must contain several substantive rows in both columns.
+        if sum(w['bbox'][0]>=middle and len(w['text'])>=3 for w in words)<5:continue
+        right_edge=min(page.rect.width-12,max(w['bbox'][2] for w in words)+3)
+        cells=[[a,top,b,bottom] for top,bottom in zip(starts,[*starts[1:],end-2]) for a,b in [(left,middle),(middle,right_edge)]]
+        regions.append(dict(bbox=[left,starts[0],right_edge,end-2],cells=cells,method='captioned_comparison_columns'))
+    return regions
 
 
 def borderless_numeric_table(page,blocks):

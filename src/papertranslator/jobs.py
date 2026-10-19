@@ -19,7 +19,7 @@ from .eta import TranslationETA, work_units
 from .refinement import policy, attach_context, run as refine_records
 from .storage import atomic_json, fingerprint, now, pages, read_json, root, safe_title, sha256, worker_lock
 
-TERMINAL = {'completed_with_warnings', 'failed', 'cancelled', 'interrupted'}
+TERMINAL = {'review_required','completed_with_warnings', 'failed', 'cancelled', 'interrupted'}
 
 
 def create_job(source, destination, page_spec='', profile='general', title='',model_key=None,independent_review=False,ocr_mode='auto',quality_mode='contextual',bilingual_layout='source_position'):
@@ -186,6 +186,15 @@ def _run(folder, retry_failed):
                     record['review_fingerprint']=review_stamp
                     atomic_json(folder/'checkpoint.json',dict(fingerprint=stamp,records=records))
             if cancel(): raise Cancelled()
+        if any(r['kind']=='diagram_label' for r in records.values()):
+            from .label_fit import run as fit_labels
+            from .models import catalog
+            label_model=quality_policy.get('editor') or catalog(registry).get('qwen38') or model
+            label_model={**label_model,'options':{**label_model.get('options',{}),'context':8192,'temperature':.1}}
+            save('fitting_labels','도식 문구와 상자 크기 맞춤',eta_seconds=None,eta=None)
+            fit_labels(records,label_model,folder,LlamaBackend,
+                lambda:atomic_json(folder/'checkpoint.json',dict(fingerprint=stamp,records=records)),
+                lambda message:save(stage=message),cancel)
         if state.get('bilingual_layout','reflow')=='source_position':
             from .alignment import run as align_records
             from .models import catalog
@@ -230,7 +239,8 @@ def _run(folder, retry_failed):
                     note.write_text(text,encoding='utf-8'); number+=1
         except Exception:
             shutil.rmtree(temp); raise
-        save('completed_with_warnings','완료 · 원문 대조 필요',output=str(dest),eta_seconds=None,pid=None,
+        save('review_required' if quality['delivery_status']=='review_required' else 'completed_with_warnings',
+             '검토 필요 · 배치 또는 번역 검사 미통과' if quality['delivery_status']=='review_required' else '생성됨 · 기계 검사 통과 · 원문 대조 필요',output=str(dest),eta_seconds=None,pid=None,
              quality_summary=dict(failed=quality['failed_paragraphs'],warnings=quality['warnings_paragraphs'],
                                   translated=quality['translated_paragraphs'],semantic_review_coverage=quality['semantic_review_coverage'],
                                   ocr_pages=quality['ocr_pages'],ocr_low_confidence_lines=quality['ocr_low_confidence_lines'],
@@ -238,7 +248,8 @@ def _run(folder, retry_failed):
                                   refinement_processed=quality['refinement_processed'],refinement_accepted=quality['refinement_accepted'],output_layout=quality['output_layout'],
                                   layout_overflow=(quality.get('layout') or {}).get('overflow_pages',0),
                                   layout_proposed=len((quality.get('layout') or {}).get('proposed_page_alignments',[])),
-                                  layout_unresolved=len((quality.get('layout') or {}).get('unresolved_page_alignments',[]))))
+                                  layout_unresolved=len((quality.get('layout') or {}).get('unresolved_page_alignments',[])),
+                                  layout_validation=(quality.get('layout') or {}).get('validation')))
     except Cancelled:
         save('cancelled','취소됨 · 이어하기 가능',pid=None,eta_seconds=None)
     except Exception as exc:
