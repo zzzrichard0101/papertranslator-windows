@@ -81,7 +81,7 @@ def remaining_label(state, elapsed_seconds, active):
         return '—'
     if state.get('status') != 'translating':
         return {'queued':'대기 중', 'preparing':'원본 확인 중', 'analyzing':'PDF 분석·OCR 중',
-                'reviewing':'추가 검수 중','refining':'다중 모델 교정 중','cloud_reviewing':'무료 API 검토 중', 'typesetting':'PDF 생성 중', 'saving':'저장 중'}.get(state.get('status'), '준비 중')
+                'aligning':'쪽별 번역 대응 중','reviewing':'추가 검수 중','refining':'다중 모델 교정 중','cloud_reviewing':'무료 API 검토 중', 'typesetting':'PDF 생성 중', 'saving':'저장 중'}.get(state.get('status'), '준비 중')
     eta = state.get('eta') or {}
     phase = eta.get('state')
     if phase == 'loading':

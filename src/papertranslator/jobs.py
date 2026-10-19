@@ -22,8 +22,9 @@ from .storage import atomic_json, fingerprint, now, pages, read_json, root, safe
 TERMINAL = {'completed_with_warnings', 'failed', 'cancelled', 'interrupted'}
 
 
-def create_job(source, destination, page_spec='', profile='general', title='',model_key=None,independent_review=False,ocr_mode='auto',quality_mode='contextual'):
+def create_job(source, destination, page_spec='', profile='general', title='',model_key=None,independent_review=False,ocr_mode='auto',quality_mode='contextual',bilingual_layout='source_position'):
     signature(ocr_mode)
+    if bilingual_layout not in {'source_position','reflow'}:raise ValueError('지원하지 않는 대조본 배치입니다.')
     source=Path(source).resolve(); destination=Path(destination).resolve()
     if source.suffix.lower()!='.pdf' or not source.is_file():
         raise ValueError('PDF 파일을 선택하세요.')
@@ -48,6 +49,7 @@ def create_job(source, destination, page_spec='', profile='general', title='',mo
     state['quality_policy']=policy(quality_mode,state['model'],read_json(root()/'model_registry.json',{}))
     if cloud:state['quality_policy']['cloud']={k:cloud[k] for k in ['enabled','model','max_requests']}
     state['ocr_mode']=ocr_mode
+    state['bilingual_layout']=bilingual_layout
     if independent_review:
         reviewer=read_json(root()/'model_registry.json',{}).get('reviewer')
         if not reviewer or not reviewer.get('qualified_on_small_controls'):
@@ -184,6 +186,15 @@ def _run(folder, retry_failed):
                     record['review_fingerprint']=review_stamp
                     atomic_json(folder/'checkpoint.json',dict(fingerprint=stamp,records=records))
             if cancel(): raise Cancelled()
+        if state.get('bilingual_layout','reflow')=='source_position':
+            from .alignment import run as align_records
+            from .models import catalog
+            alignment_model=quality_policy.get('editor') or catalog(registry).get('qwen38') or model
+            alignment_model={**alignment_model,'options':{**alignment_model.get('options',{}),'context':8192,'temperature':.1}}
+            save('aligning','원문 쪽과 번역 대응 정리',eta_seconds=None,eta=None)
+            align_records(records,alignment_model,folder,LlamaBackend,
+                lambda:atomic_json(folder/'checkpoint.json',dict(fingerprint=stamp,records=records)),
+                lambda message:save(stage=message),cancel)
         save('typesetting','한국어·영한 대조 PDF 조판',eta_seconds=None,current_source_page=None)
         # One result revision is committed only after both PDFs and report validate.
         staging=folder/('revision-'+uuid.uuid4().hex)
@@ -224,7 +235,10 @@ def _run(folder, retry_failed):
                                   translated=quality['translated_paragraphs'],semantic_review_coverage=quality['semantic_review_coverage'],
                                   ocr_pages=quality['ocr_pages'],ocr_low_confidence_lines=quality['ocr_low_confidence_lines'],
                                   ocr_unscored_lines=quality['ocr_unscored_lines'],
-                                  refinement_processed=quality['refinement_processed'],refinement_accepted=quality['refinement_accepted']))
+                                  refinement_processed=quality['refinement_processed'],refinement_accepted=quality['refinement_accepted'],output_layout=quality['output_layout'],
+                                  layout_overflow=(quality.get('layout') or {}).get('overflow_pages',0),
+                                  layout_proposed=len((quality.get('layout') or {}).get('proposed_page_alignments',[])),
+                                  layout_unresolved=len((quality.get('layout') or {}).get('unresolved_page_alignments',[]))))
     except Cancelled:
         save('cancelled','취소됨 · 이어하기 가능',pid=None,eta_seconds=None)
     except Exception as exc:

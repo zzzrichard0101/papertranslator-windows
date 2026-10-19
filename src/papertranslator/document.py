@@ -1,4 +1,4 @@
-"""Conservative text-PDF IR and legible reflow export. Original is never edited."""
+"""Traceable PDF regions, readable Korean and source-position bilingual export."""
 import html
 import json
 from pathlib import Path
@@ -11,8 +11,9 @@ import pymupdf as fitz
 from .storage import atomic_json, safe_title, sha256, read_json
 import hashlib
 from .ocr import LocalOCR, page_blocks, signature
+from .regions import separate_tables,slice_fragment
 
-PARSER = 'pymupdf-logical-paragraph-ir-11-overlapping-header-fragments'
+PARSER = 'pymupdf-logical-paragraph-ir-12-source-regions'
 JOIN_WORDS=set('economic psychological paradigm practitioner practitioners particular individual individuals '
               'support supporting delivered delivery theories theory research professional professionals '
               'clinical objective subjective experience experiences observation observations systematic '
@@ -56,15 +57,17 @@ def paragraph_units(page, text_blocks=None):
     def flush():
         nonlocal current
         if not current:return
-        text=''
+        text='';layout_lines=[]
         raw=' '.join(line['text'].strip() for line in current)
         for line in current:
             part=line['text'].strip()
-            text,_=join_lines(text,part)
+            text,removed=join_lines(text,part)
+            if removed and layout_lines:layout_lines[-1]['end']-=1
+            layout_lines.append(dict(start=len(text)-len(part),end=len(text),bbox=line['bbox']))
         bbox=[min(l['bbox'][0] for l in current),min(l['bbox'][1] for l in current),
               max(l['bbox'][2] for l in current),max(l['bbox'][3] for l in current)]
         spans=[s for l in current for s in l['spans']]
-        units.append(dict(source=text,raw_source=raw,bbox=bbox,kind=current[0]['kind'],preserve=False,style_runs=spans))
+        units.append(dict(source=text,raw_source=raw,bbox=bbox,layout_lines=layout_lines,kind=current[0]['kind'],preserve=False,style_runs=spans))
         current=[]
     for block in (page.get_text('dict',sort=True)['blocks'] if text_blocks is None else text_blocks):
         if block['type']!=0:continue
@@ -93,7 +96,16 @@ def paragraph_units(page, text_blocks=None):
                 # A wrapped age/value such as "age / 31. She ..." is not a list.
                 numbered=bool(re.search(r'[.!?][\"\x27’”]*\s*$',current[-1]['text'])) or bool(re.match(r'^\s*\d+[.)]\s',current[0]['text']))
             bullet|=numbered
-            if current and (kind!=current[0]['kind'] or heading or bullet or gap):flush()
+            column_jump=previous and (line['bbox'][1]<previous['bbox'][1]-max(25,2*(previous['bbox'][3]-previous['bbox'][1])) or
+                (abs(line['bbox'][1]-previous['bbox'][1])<10 and
+                 (line['bbox'][0]>previous['bbox'][2]+12 or line['bbox'][2]<previous['bbox'][0]-12)))
+            indented=False
+            if len(current)>=2 and kind=='paragraph' and previous:
+                left=min(l['bbox'][0] for l in current);width=max(l['bbox'][2] for l in current)-left
+                inset=line['bbox'][0]-left
+                indented=(width>150 and 4<inset<35 and previous['bbox'][2]-previous['bbox'][0]<width*.95 and
+                          bool(re.search(r'[.!?][\"\x27’”)]*\s*$',current[-1]['text'])))
+            if current and (kind!=current[0]['kind'] or heading or bullet or gap or column_jump or indented):flush()
             current.append(dict(text=text,bbox=line['bbox'],spans=spans,kind=kind));previous=line
     flush()
     return units
@@ -168,7 +180,18 @@ def analyze(source, selected, progress=lambda *_: None, ocr_mode='auto', cancel=
                     else:ordered.extend(dict(type=0,bbox=line['bbox'],lines=[line],
                         reading_top=line.get('reading_top',line['bbox'][1])) for line in block['lines'])
                 text_blocks=sorted(ordered,key=lambda b:(b.get('reading_top',b['bbox'][1]),b['bbox'][0]))
-            units=paragraph_units(page,text_blocks)
+            body_blocks,table_cells,regions=separate_tables(page,text_blocks,scanned=bool(extraction['lines']))
+            page_info['table_regions']=regions
+            units=paragraph_units(page,body_blocks)
+            for cell in table_cells:
+                cell_units=paragraph_units(page,[dict(type=0,lines=cell['lines'],bbox=cell['bbox'])])
+                # A cell remains one translation unit; boundaries never cross a grid.
+                for unit in cell_units:
+                    unit.update(kind='table_cell',table_index=cell['table'],cell_index=cell['cell'],cell_bbox=cell['bbox'])
+                    region=protected_kind(unit['source'],unit['style_runs'])
+                    if region:unit.update(preserve=True,preserve_reason='table_'+region)
+                    units.append(unit)
+            units.sort(key=lambda u:(u['bbox'][1],u['bbox'][0]))
             for unit in units:
                 unit['source_page_index']=index
                 if unit['bbox'][1]>page.rect.height*.94 and len(unit['source'])<=20:
@@ -191,7 +214,8 @@ def analyze(source, selected, progress=lambda *_: None, ocr_mode='auto', cancel=
                 methods=set(s.get('extraction','native') for s in unit['style_runs'])
                 method='mixed' if len(methods)>1 else next(iter(methods))
                 unit['fragments']=[dict(source_page_index=index,bbox=unit['bbox'],source=unit['source'],
-                                        raw_source=unit.get('raw_source',unit['source']),extraction=method,ocr_confidence_min=min(scores) if scores else None)]
+                                        raw_source=unit.get('raw_source',unit['source']),extraction=method,ocr_confidence_min=min(scores) if scores else None,
+                                        layout_lines=unit.get('layout_lines',[]),cell_bbox=unit.get('cell_bbox'))]
             extracted.append(units)
             pages.append(page_info)
         # Repeated running titles are metadata; do not let them sever sentences
@@ -265,7 +289,7 @@ def analyze(source, selected, progress=lambda *_: None, ocr_mode='auto', cancel=
                 end=start+len(fragment['source']);spans.append((start,end,fragment));offset=end
             for part,segment in enumerate([source] if block['preserve'] else segments(source)):
                 start=source.find(segment,cursor);end=start+len(segment);cursor=end
-                fragments=[{**f,'source':source[max(a,start):min(b,end)]} for a,b,f in spans if a<end and b>start]
+                fragments=[slice_fragment(f,max(a,start)-a,min(b,end)-a) for a,b,f in spans if a<end and b>start]
                 indices=list(dict.fromkeys(f['source_page_index'] for f in fragments))
                 bid=f'p{indices[0]+1}-u{number}-s{part}'
                 item={k:v for k,v in block.items() if k not in {'fragments','source','source_page_index'}}
@@ -279,7 +303,7 @@ def analyze(source, selected, progress=lambda *_: None, ocr_mode='auto', cancel=
                 for index in indices[1:]:by_page[index]['continuations'].append(dict(id=bid,source_page_index=indices[0],source_page_indices=indices))
         return dict(parser=PARSER, ocr=signature(ocr_mode), pages=pages, blocks=logical,
                     limitations=['빈 줄·제목·글머리표로 문단을 나누고 연속 선택한 쪽의 미완성 본문을 연결합니다. 복잡한 2단·표는 검토가 필요합니다.',
-                                 '이 버전은 한국어 가독성을 위한 재배치 출력입니다. 원문과 같은 조판은 아직 구현되지 않았습니다.',
+                                 '한국어 PDF는 읽기형 재배치이며, 위치 대응 대조본은 원문 영역을 따릅니다. 번역이 길면 보충면으로 이어지고 복잡한 조판은 검토가 필요합니다.',
                                  'OCR은 영어 인쇄체 중심입니다. 손글씨·수식·흐린 스캔·복잡한 표의 인식 및 읽기 순서는 보장하지 않습니다. 기계 의미 검수는 coverage를 확인하세요.'])
     finally:
         doc.close()
@@ -381,32 +405,38 @@ def export(ir, records, original, folder, title, job, cancel=lambda: False):
         if sha256(folder/'Original.pdf') != job['source_sha256']:
             raise RuntimeError('원본 복사본 검증 실패')
         mapping = flow_pdf(ir, records, folder/'Korean.pdf', title)
-        with fitz.open(original) as src, fitz.open(folder/'Korean.pdf') as ko, fitz.open() as dual:
-            faces={i:(fitz.Rect(src[i].rect),src[i].rotation) for i in set(mapping)}
-            for n, source_index in enumerate(mapping):
-                if cancel():
-                    from .backend import Cancelled
-                    raise Cancelled()
-                a=src[source_index]; b=ko[n]
-                face,rotation=faces[source_index]
-                # Use unrotated source coordinates and explicitly apply its
-                # display rotation when placing the original crop. This affects
-                # only the in-memory document, never the source/copied PDF bytes.
-                a.set_rotation(0)
-                height=max(face.height,b.rect.height)
-                out=dual.new_page(width=face.width+b.rect.width,height=height)
-                # Preserve original vectors and images on the left, with no edits.
-                if a.get_contents():
-                    out.show_pdf_page(fitz.Rect(0,0,face.width,face.height),src,source_index,rotate=-rotation)
-                out.show_pdf_page(fitz.Rect(face.width,0,face.width+b.rect.width,b.rect.height),ko,n)
-            dual.save(folder/'Bilingual.pdf', garbage=4, deflate=True)
+        layout=None;dual_mapping=mapping
+        if job.get('bilingual_layout','reflow')=='source_position':
+            from .layout import bilingual_pdf
+            layout=bilingual_pdf(ir,records,original,folder/'Bilingual.pdf',cancel)
+            dual_mapping=layout['source_indices'];atomic_json(folder/'Layout.json',layout)
+        else:
+            with fitz.open(original) as src, fitz.open(folder/'Korean.pdf') as ko, fitz.open() as dual:
+                faces={i:(fitz.Rect(src[i].rect),src[i].rotation) for i in set(mapping)}
+                for n, source_index in enumerate(mapping):
+                    if cancel():
+                        from .backend import Cancelled
+                        raise Cancelled()
+                    a=src[source_index]; b=ko[n]
+                    face,rotation=faces[source_index]
+                    # Use unrotated source coordinates and explicitly apply its
+                    # display rotation when placing the original crop. This affects
+                    # only the in-memory document, never the source/copied PDF bytes.
+                    a.set_rotation(0)
+                    height=max(face.height,b.rect.height)
+                    out=dual.new_page(width=face.width+b.rect.width,height=height)
+                    # Preserve original vectors and images on the left, with no edits.
+                    if a.get_contents():
+                        out.show_pdf_page(fitz.Rect(0,0,face.width,face.height),src,source_index,rotate=-rotation)
+                    out.show_pdf_page(fitz.Rect(face.width,0,face.width+b.rect.width,b.rect.height),ko,n)
+                dual.save(folder/'Bilingual.pdf', garbage=4, deflate=True)
         failed=[r for r in records.values() if r['status']=='failed']
         warnings=[r for r in records.values() if r.get('issues') or r.get('review',{}).get('verdict') in {'review','fail','uncertain'}]
         translated=[r for r in records.values() if r['status']=='translated']
         reviewed=[r for r in translated if r.get('review',{}).get('evidence_validated')]
         coverage=len(reviewed)/len(translated) if translated else 0
         review_status='not_performed' if not reviewed else ('all_machine_reviewed' if len(reviewed)==len(translated) else 'partially_machine_reviewed')
-        quality=dict(schema=5, ocr=ir.get('ocr'), ocr_pages=sum(p.get('ocr',{}).get('lines',0)>0 for p in ir['pages']),
+        quality=dict(schema=6, ocr=ir.get('ocr'), ocr_pages=sum(p.get('ocr',{}).get('lines',0)>0 for p in ir['pages']),
                      ocr_unscored_lines=sum(p.get('ocr',{}).get('unscored_lines',0) for p in ir['pages']),
                      ocr_low_confidence_lines=sum(p.get('ocr',{}).get('low_confidence_lines',0) for p in ir['pages']),
                      needs_review=True, file_generation='completed', semantic_review=review_status,
@@ -414,7 +444,8 @@ def export(ir, records, original, folder, title, job, cancel=lambda: False):
                      reviewer=job.get('reviewer'),
                      model=job['model'], source_sha256=job['source_sha256'],
                      selected_source_pages=[p['source_page_index']+1 for p in ir['pages']],
-                     korean_output_source_indices=mapping, output_layout='reflow',
+                     korean_output_source_indices=mapping, output_layout=job.get('bilingual_layout','reflow'),
+                     bilingual_output_source_indices=dual_mapping,layout=layout,
                      failed_paragraphs=len(failed), warnings_paragraphs=len(warnings),
                      translated_paragraphs=sum(r['status']=='translated' for r in records.values()),
                      preserved_paragraphs=sum(r['status']=='preserved' for r in records.values()),
@@ -434,6 +465,10 @@ def export(ir, records, original, folder, title, job, cancel=lambda: False):
         sections=[]
         for r in records.values():
             issues=' / '.join(i['message'] for i in r.get('issues', []))
+            if layout and r['id'] in layout['unresolved_page_alignments']:
+                issues+=' / 쪽별 대응 미확정: 대조본에는 연결 문단 전체가 표시됩니다. 배치 확인이 필요합니다.'
+            if layout and r['id'] in layout['proposed_page_alignments']:
+                issues+=' / 쪽별 대응 추정: 기계가 제안한 문장 배치이며 원문 확인이 필요합니다.'
             if r.get('extraction') in {'ocr','mixed'}:
                 score=r.get('ocr_confidence_min')
                 issues+=' / OCR 인식 원문 · 이미지와 대조 필요'+(f' · 최소 신뢰도 {score:.0%}' if score is not None else '')
@@ -460,11 +495,11 @@ def export(ir, records, original, folder, title, job, cancel=lambda: False):
         (folder/'Review.html').write_text(review,encoding='utf-8')
         fields=dict(제목=title, 원본파일=job['source_name'], 번역일=job['created_at'], 원본SHA256=job['source_sha256'],
                     전체쪽=job['total_pages'], 선택쪽=quality['selected_source_pages'], 모델=job['model'],
-                    분야=job['profile'], 조판='한국어 재배치', 의미검수=review_status, 검수coverage=coverage,
+                    분야=job['profile'], 조판=quality['output_layout'], 의미검수=review_status, 검수coverage=coverage,
                     사용자승인=False, 번역실패문단수=len(failed), tags=['논문','번역'])
         name=safe_title(title)
         note='---\n'+'\n'.join(k+': '+json.dumps(v,ensure_ascii=False) for k,v in fields.items())+'\n---\n\n# '+name+'\n\n'
-        note+=f'> 초기 개발판: 기계 의미 검수 {len(reviewed)}/{len(translated)}문단 · 인간 승인 없음. OCR {quality["ocr_pages"]}쪽 · 인식 오류 대조 필요. 원문 조판 재현은 미지원입니다.\n\n'
+        note+=f'> 초기 개발판: 기계 의미 검수 {len(reviewed)}/{len(translated)}문단 · 인간 승인 없음. OCR {quality["ocr_pages"]}쪽 · 인식 오류 대조 필요. 한국어 PDF는 읽기형이며 대조본 배치는 작업 설정과 Layout.json을 확인하세요.\n\n'
         note+='\n'.join(f'- [[{f}|{label}]]' for f,label in [('Original.pdf','영어 원문'),('Korean.pdf','한국어'),('Bilingual.pdf','영한 대조'),('Review.html','문단 검토')])
         note+='\n\n![[Korean.pdf]]\n\n## 메모\n\n'
         (folder/(name+'.md')).write_text(note,encoding='utf-8')
@@ -472,7 +507,7 @@ def export(ir, records, original, folder, title, job, cancel=lambda: False):
             if len(out)!=len(mapping) or any(not p.get_text().strip() for p in out):
                 raise RuntimeError('한국어 PDF 재열기/텍스트 검증 실패')
         with fitz.open(folder/'Bilingual.pdf') as out:
-            if len(out)!=len(mapping):
+            if len(out)!=len(dual_mapping):
                 raise RuntimeError('대조 PDF 쪽수 검증 실패')
         return quality
     except Exception:

@@ -10,6 +10,7 @@ uv run pytest -q
 uv run python scripts/audit_public.py
 uv run python scripts/eta_integration.py
 uv run python scripts/quality_integration.py
+uv run python scripts/layout_integration.py
 ```
 
 `audit_public.py`는 Git index의 실제 파일 내용을 검사하므로 변경 사항을 stage한 뒤 실행하세요.
@@ -21,6 +22,7 @@ uv run python scripts/quality_integration.py
 번역 모델 성능/의미 정확도 시험과 구분하세요.
 `quality_integration.py` 역시 합성 입력과 테스트 backend로 다중 모델 단계, 교정 채택,
 체크포인트 재사용과 내보내기를 검사합니다. 실제 모델의 품질 평가가 아닙니다.
+`layout_integration.py`는 합성 두 쪽의 문장 대응·표 셀 배치·원본 해시·모델 호출 없는 재개를 검사합니다.
 
 ## GPU 통합 시험
 
@@ -31,6 +33,7 @@ uv run python scripts/quality_integration.py
 uv run python scripts/integration.py
 uv run python scripts/ocr_integration.py
 uv run python scripts/quality_gpu_integration.py
+uv run python scripts/layout_gpu_integration.py
 uv run python scripts/recovery_checks.py
 uv run python scripts/visual_validate.py
 ```
@@ -54,6 +57,8 @@ uv run python scripts/package_public.py
 OCR 모델과 config.yaml은 PyInstaller의 collect-data로 포함합니다. 빌드 후 `scripts/ocr_integration.py --exe dist/PaperTranslator/PaperTranslator.exe`로 실제 OCR/번역 worker를 검사하세요.
 `quality_gpu_integration.py --exe dist/PaperTranslator/PaperTranslator.exe`는 Hy-MT2와 Qwen을 순차 실행하고,
 합성 부정 오류의 교정과 초벌 캐시 재사용을 검사합니다. GPU 시험끼리 동시에 실행하지 마세요.
+`layout_gpu_integration.py --exe dist/PaperTranslator/PaperTranslator.exe`는 분리된 데이터 루트에서
+실제 OCR 단어 좌표·스캔 표 셀 6개·쪽 사이 문장 대응·원문 면 픽셀·캐시 재개를 검사합니다.
 영어 LSTM 데이터는 공식 저장소의 고정 revision에서 받아 크기와 SHA256을 확인한 뒤
 `papertranslator/ocr_models`에 포함합니다. 모델 원본은 Git에 올리지 않습니다.
 

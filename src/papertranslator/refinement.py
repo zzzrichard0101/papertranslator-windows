@@ -8,7 +8,7 @@ from .quality import check, PROTECTED, relevant_terms
 from .storage import atomic_json, fingerprint
 from .translation import blocking, translate_record
 
-VERSION='source-grounded-edit-3'
+VERSION='source-grounded-edit-4-table-labels'
 MODES={'contextual','ensemble','hybrid','legacy'}
 SCHEMA=dict(type='object',additionalProperties=False,properties={
     'decision':dict(type='string',enum=['keep','revise','uncertain']),
@@ -38,7 +38,9 @@ def attach_context(ir,title,profile='general'):
         # Short labels/instructions are easily replaced by surrounding prose in
         # translation specialists. Keep their translation input self-contained.
         if len(block['source'])<100:
-            block['context']={};continue
+            block['context']=(dict(domain='art therapy and clinical research' if profile=='art_therapy' else profile,
+                                   document=title[:160]) if block.get('kind')=='table_cell' else {})
+            continue
         # Nearby selected text only; never include paths, API keys or user notes.
         previous=body[index-1] if index else None
         following=body[index+1] if index+1<len(body) else None
@@ -96,7 +98,7 @@ def run(records,ir,settings,folder,profile,backend_factory,save_checkpoint,progr
     if settings.get('mode') not in {'ensemble','hybrid'}:return
     stamp=fingerprint(settings);blocks={b['id']:b for b in ir['blocks']}
     pending=[r for r in records.values() if r['status']!='preserved' and
-             (len(r['source'])>=100 or r.get('issues') or r['status']=='failed') and
+             (len(r['source'])>=100 or r.get('kind')=='table_cell' or r.get('issues') or r['status']=='failed') and
              r.get('refinement',{}).get('policy')!=stamp]
     auxiliary=settings.get('auxiliary')
     if auxiliary and pending:

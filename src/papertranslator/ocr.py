@@ -9,7 +9,7 @@ from .backend import Cancelled
 from .storage import sha256
 from .ocr_assets import data_directory, SHA256 as ENGLISH_SHA256
 
-VERSION = 'english-lstm-best-rapid-fallback-2'
+VERSION = 'english-lstm-best-rapid-fallback-3-word-boxes'
 MODES = {'auto', 'off', 'force'}
 MODEL_HASHES = {
     'ch_PP-OCRv4_det_infer.onnx': 'd2a7720d45a54257208b1e13e36a8479894cb74155a5efe29462512d42f49da9',
@@ -73,7 +73,8 @@ class LocalOCR:
                     text=' '.join(w[4] for w in words)
                     x0=min(w[0] for w in words)*220/72;y0=min(w[1] for w in words)*220/72
                     x1=max(w[2] for w in words)*220/72;y1=max(w[3] for w in words)*220/72
-                    rows.append([[[x0,y0],[x1,y0],[x1,y1],[x0,y1]],text,None])
+                    rows.append([[[x0,y0],[x1,y0],[x1,y1],[x0,y1]],text,None,
+                                 dict(words=[dict(text=w[4],bbox=[v*220/72 for v in w[:4]]) for w in words])])
             if any(re.search(r'\b[A-Za-z]{3,}\b',r[1]) for r in rows):return rows
         result, _ = self._rapid()(pixels)
         return result or []
@@ -92,10 +93,12 @@ def page_blocks(page, mode='auto', engine=None, cancel=lambda: False):
         raise Cancelled()
     native = page.get_text('dict', flags=fitz.TEXTFLAGS_DICT & ~fitz.TEXT_PRESERVE_IMAGES, sort=True)['blocks']
     matrix = page.rotation_matrix
+    native_words=[dict(text=w[4],bbox=list(fitz.Rect(w[:4])*matrix)) for w in page.get_text('words')]
     for block in native:
         block['bbox'] = list(fitz.Rect(block['bbox']) * matrix)
         for line in block.get('lines', []):
             line['bbox'] = list(fitz.Rect(line['bbox']) * matrix)
+            line['layout_words']=[w for w in native_words if fitz.Rect(line['bbox']).contains((fitz.Rect(w['bbox']).tl+fitz.Rect(w['bbox']).br)/2)]
             for span in line['spans']:
                 span['bbox'] = list(fitz.Rect(span['bbox']) * matrix)
                 span['extraction'] = 'native'
@@ -126,7 +129,7 @@ def page_blocks(page, mode='auto', engine=None, cancel=lambda: False):
     retained = [] if mode == 'force' else native
     native_spans = [s for b in native for l in b.get('lines', []) for s in l['spans'] if s['text'].strip()]
     previous_top=None;previous_height=0
-    for points, text, confidence, *_ in rows:
+    for points, text, confidence, *extra in rows:
         if not text.strip():
             continue
         bbox = [min(p[0] for p in points)/scale, min(p[1] for p in points)/scale,
@@ -153,7 +156,9 @@ def page_blocks(page, mode='auto', engine=None, cancel=lambda: False):
         span = dict(text=text.strip(), bbox=bbox, size=size, flags=0, font='OCR',
                     extraction='ocr', ocr_confidence=confidence)
         retained.append(dict(type=0, bbox=bbox, reading_top=reading_top,
-                             lines=[dict(bbox=bbox, spans=[span],reading_top=reading_top)]))
+                             lines=[dict(bbox=bbox, spans=[span],reading_top=reading_top,
+                                         layout_words=[dict(text=w['text'],bbox=[v/scale for v in w['bbox']])
+                                                       for w in (extra[0].get('words',[]) if extra and isinstance(extra[0],dict) else [])])]))
         info['lines'] += 1
         info['low_confidence_lines'] += confidence is not None and confidence < LOW_CONFIDENCE
         info['unscored_lines'] += confidence is None
