@@ -4,7 +4,7 @@ import re
 import secrets
 from .quantities import equivalent_durations,equivalent_fractions
 
-VERSION = 'quality-14'
+VERSION = 'quality-15'
 PROMPT_VERSION = 'contextual-paragraph-9'
 YEAR_REFERENCE=r'(?:1[5-9]|20)\d{2}[a-f]?'
 YEAR_LOCATOR=YEAR_REFERENCE+r'(?:\s*[,;]\s*'+YEAR_REFERENCE+r')*(?::\s*\d+(?:[-–]\d+)?)?'
@@ -165,6 +165,10 @@ def check(source, target):
     year_list=year+r'(?:\s*[,;]\s*'+year+r')+'
     citations=re.findall(r"\b[A-Z][A-Za-z’'-]{2,}(?:\s+et al\.)?\s*\(\s*("+year_list+r')\s*\)',source)
     for citation in re.findall(CITATION,source):citations.extend(re.findall(year_list,citation))
+    # Mixed references can include forthcoming works. Accept spacing only in
+    # year lists explicitly following a source author inside parentheses.
+    for parenthetical in re.findall(r'\([^()\n]{1,500}\)',source):
+        citations.extend(re.findall(r'\b'+AUTHOR+r'\s*,\s*('+year_list+r')',parenthetical))
     allowed_lists={re.sub(r'\s+','',value) for value in citations}
     def citation_spacing(text):
         def parenthetical(match):

@@ -27,6 +27,7 @@ from papertranslator.translation import blocking
     ('The control group attended weekly sessions.','대조군은 주 1회 세션에 참여했다.'),
     ('Firsthand sources were used.','1차 자료가 사용되었다.'),
     ('The studies (Example, 1991,1995,1997,2000) agreed.','연구들(Example, 1991, 1995, 1997, 2000)은 일치했다.'),
+    ('The studies (Example, 1991,1995, 1997, 2000; Demo, forthcoming) agreed.','연구들(Example, 1991, 1995, 1997, 2000; Demo, 출간 예정)은 일치했다.'),
 ])
 def test_legitimate_academic_notation(source,target):
     assert not blocking(check(source,target))
