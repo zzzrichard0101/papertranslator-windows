@@ -30,6 +30,7 @@ uv run python scripts/quality_integration.py
 ```powershell
 uv run python scripts/integration.py
 uv run python scripts/ocr_integration.py
+uv run python scripts/quality_gpu_integration.py
 uv run python scripts/recovery_checks.py
 uv run python scripts/visual_validate.py
 ```
@@ -51,6 +52,8 @@ uv run python scripts/package_public.py
 작업 기록·번역 모델·추론 런타임은 복사하지 않습니다. 소형 OCR 모델은 포함합니다. 실행 파일은 서명되지 않은 알파입니다.
 앱 폴더의 Qt DLL을 별도 파일로 유지하고, 라이선스·재빌드 경로를 함께 배포하세요.
 OCR 모델과 config.yaml은 PyInstaller의 collect-data로 포함합니다. 빌드 후 `scripts/ocr_integration.py --exe dist/PaperTranslator/PaperTranslator.exe`로 실제 OCR/번역 worker를 검사하세요.
+`quality_gpu_integration.py --exe dist/PaperTranslator/PaperTranslator.exe`는 Hy-MT2와 Qwen을 순차 실행하고,
+합성 부정 오류의 교정과 초벌 캐시 재사용을 검사합니다. GPU 시험끼리 동시에 실행하지 마세요.
 영어 LSTM 데이터는 공식 저장소의 고정 revision에서 받아 크기와 SHA256을 확인한 뒤
 `papertranslator/ocr_models`에 포함합니다. 모델 원본은 Git에 올리지 않습니다.
 

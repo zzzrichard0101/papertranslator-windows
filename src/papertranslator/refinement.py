@@ -8,12 +8,12 @@ from .quality import check, PROTECTED, relevant_terms
 from .storage import atomic_json, fingerprint
 from .translation import blocking, translate_record
 
-VERSION='source-grounded-edit-1'
+VERSION='source-grounded-edit-2'
 MODES={'contextual','ensemble','hybrid','legacy'}
 SCHEMA=dict(type='object',additionalProperties=False,properties={
     'decision':dict(type='string',enum=['keep','revise','uncertain']),
-    'source_evidence':dict(type='string'),'draft_evidence':dict(type='string'),
-    'explanation_ko':dict(type='string'),'revision':dict(type='string')},
+    'source_evidence':dict(type='string',maxLength=160),'draft_evidence':dict(type='string',maxLength=160),
+    'explanation_ko':dict(type='string',maxLength=260),'revision':dict(type='string')},
     required=['decision','source_evidence','draft_evidence','explanation_ko','revision'])
 
 
@@ -47,6 +47,8 @@ def attach_context(ir,title,profile='general'):
 def validate_edit(value,source,draft):
     if not isinstance(value,dict) or set(value)!=set(SCHEMA['required']):raise ValueError('교정 JSON 필드 오류')
     if any(not isinstance(v,str) for v in value.values()):raise ValueError('교정 필드 타입 오류')
+    if any(len(value[key])>spec['maxLength'] for key,spec in SCHEMA['properties'].items() if 'maxLength' in spec):
+        raise ValueError('교정 근거·설명 길이 초과')
     if value['decision'] not in {'keep','revise','uncertain'}:raise ValueError('교정 판정 오류')
     if value['decision']=='revise':
         if not value['source_evidence'] or value['source_evidence'] not in source:raise ValueError('교정의 원문 인용 근거 불일치')
@@ -69,8 +71,11 @@ def edit(backend,source,draft,alternative='',context=None,response_sink=None):
         'An alternative translation is fallible; compare it to SOURCE and never vote by agreement alone. '
         'Do not reconstruct unreadable OCR or import neighbouring context into the translation. '
         'If the draft is faithful and readable, decide keep with an empty revision. '
+        'Do not replace faithful readable wording merely to impose a different stylistic preference. '
         'If a justified correction is needed, decide revise and return the COMPLETE corrected target paragraph, '
         'quoting exact nonempty substrings from SOURCE and DRAFT that justify it. '
+        'Use only the shortest quote needed for one concrete error: at most 160 characters per quote. '
+        'Keep explanation_ko within 260 characters, leaving room for the COMPLETE revision. '
         'If source quality or meaning is uncertain, decide uncertain with empty revision. '
         'No inference from missing text. No additional facts. No Hanja/Japanese in Korean prose. '
         'EBP = 근거 기반 실천; EBM = 근거 기반 의학; RCT = 무작위 대조시험; effectiveness = 효과성. '

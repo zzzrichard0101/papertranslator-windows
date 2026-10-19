@@ -141,6 +141,7 @@ def test_edit_requires_real_source_and_draft_quotes():
     with pytest.raises(ValueError):validate_edit(revision(draft_evidence='없는 표현'),source,draft)
     with pytest.raises(ValueError):validate_edit(revision(revision='연구 근거は 임상 판단을 대체하지 않는다.'),source,draft)
     with pytest.raises(ValueError):validate_edit(revision(decision='keep'),source,draft)
+    with pytest.raises(ValueError):validate_edit(revision(explanation_ko='긴 설명 '*100),source,draft)
 
 
 def test_edit_cannot_drop_urls_or_change_quantities():

@@ -422,7 +422,7 @@ def export(ir, records, original, folder, title, job, cancel=lambda: False):
             history=(f'<details><summary>교정 전 번역과 원문 인용 근거</summary><pre>{html.escape(refinement.get("draft",""))}</pre>'
                      f'<p>원문 근거: {html.escape(refinement.get("source_evidence",""))}</p>'
                      f'<p>번역 근거: {html.escape(refinement.get("draft_evidence",""))}</p></details>') if refinement else ''
-            sections.append(f'<article><h2>원본 {page_label}쪽 · {html.escape(r["id"])}</h2>'
+            sections.append(f'<article id="{html.escape(r["id"],quote=True)}"><h2>원본 {page_label}쪽 · {html.escape(r["id"])}</h2>'
                             f'<p class="warning">{html.escape(issues)}</p><div class="pair"><pre>{html.escape(r["source"])}</pre>'
                             f'<pre lang="ko">{html.escape(target)}</pre></div>{history}</article>')
         review='''<!doctype html><html lang="ko"><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"><title>번역 검토</title><style>body{font:16px/1.7 'Malgun Gothic',sans-serif;margin:40px;background:#f4f6f8;color:#152233}header,article{max-width:1280px;margin:20px auto;padding:24px;background:white;border-radius:12px}h2{font-size:16px}.pair{display:grid;grid-template-columns:1fr 1fr;gap:30px}pre{white-space:pre-wrap;font:inherit;overflow-wrap:anywhere}.warning{color:#9a4a10}@media(max-width:700px){.pair{grid-template-columns:1fr}}</style><header><h1>영한 문단 검토</h1><p>초기 개발판 · 자동 검사는 의미 정확도를 보증하지 않습니다. 검수 범위와 판정은 Quality.json에 기록됩니다.</p></header>'''+''.join(sections)+'</html>'
