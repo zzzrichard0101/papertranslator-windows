@@ -5,7 +5,7 @@ import secrets
 from .quantities import equivalent_durations
 
 VERSION = 'quality-10'
-PROMPT_VERSION = 'contextual-paragraph-7'
+PROMPT_VERSION = 'contextual-paragraph-8'
 PROTECTED = re.compile(r'https?://[^\s<>]+|10\.\d{4,9}/[^\s<>]+|`[^`]+`|\bO\([^\n)]{1,60}\)|\[[\d,; -]+\]|\b[A-Z][a-z]+ et al\.(?:,? \d{4})?')
 NUMBER = re.compile(r'(?<![A-Za-z0-9_])[-−+]?\d+(?:[.,]\d+)*(?:\s?%|[eE][-+]?\d+)?')
 WORDS=dict(zero=0,one=1,two=2,three=3,four=4,five=5,six=6,seven=7,eight=8,nine=9,ten=10,

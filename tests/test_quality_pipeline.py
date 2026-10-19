@@ -7,7 +7,7 @@ import pytest
 
 from papertranslator.document import analyze,join_lines
 from papertranslator.quality import check,make_prompt
-from papertranslator.refinement import validate_edit,policy,run
+from papertranslator.refinement import validate_edit,policy,run,attach_context
 from papertranslator.translation import blocking
 
 
@@ -155,6 +155,15 @@ def test_specialist_contract_does_not_receive_neighbour_context():
     context=dict(before='CONTEXT_ONLY_MARKER')
     assert 'CONTEXT_ONLY_MARKER' in make_prompt('TARGET SENTENCE',{},'general','hy',context)
     assert 'CONTEXT_ONLY_MARKER' not in make_prompt('TARGET SENTENCE',{},'general','translategemma',context)
+
+
+def test_short_labels_do_not_receive_long_neighbour_context():
+    ir=dict(blocks=[dict(id='1',source='A long research paragraph. '*8,preserve=False,source_page_index=0),
+                    dict(id='2',source='This native paragraph must appear only once.',preserve=False,source_page_index=0),
+                    dict(id='3',source='The image reports two groups and 12 observations.',preserve=False,source_page_index=0)])
+    attach_context(ir,'Synthetic document title')
+    assert ir['blocks'][0]['context']['after']
+    assert ir['blocks'][1]['context']=={} and ir['blocks'][2]['context']=={}
 
 
 def test_model_roles_are_snapshots_and_require_editor():

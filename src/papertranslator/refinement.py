@@ -35,6 +35,10 @@ def policy(mode,primary,registry):
 def attach_context(ir,title,profile='general'):
     body=[b for b in ir['blocks'] if not b['preserve']]
     for index,block in enumerate(body):
+        # Short labels/instructions are easily replaced by surrounding prose in
+        # translation specialists. Keep their translation input self-contained.
+        if len(block['source'])<100:
+            block['context']={};continue
         # Nearby selected text only; never include paths, API keys or user notes.
         previous=body[index-1] if index else None
         following=body[index+1] if index+1<len(body) else None
