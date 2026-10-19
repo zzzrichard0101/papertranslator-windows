@@ -4,9 +4,13 @@ import re
 import secrets
 from .quantities import equivalent_durations
 
-VERSION = 'quality-12'
-PROMPT_VERSION = 'contextual-paragraph-8'
-PROTECTED = re.compile(r'https?://[^\s<>]+|10\.\d{4,9}/[^\s<>]+|`[^`]+`|\bO\([^\n)]{1,60}\)|\[[\d,; -]+\]|\b[A-Z][a-z]+ et al\.(?:,? \d{4})?')
+VERSION = 'quality-13'
+PROMPT_VERSION = 'contextual-paragraph-9'
+YEAR_REFERENCE=r'(?:1[5-9]|20)\d{2}[a-f]?'
+YEAR_LOCATOR=YEAR_REFERENCE+r'(?:\s*[,;]\s*'+YEAR_REFERENCE+r')*(?::\s*\d+(?:[-–]\d+)?)?'
+AUTHOR=r"[A-Z][A-Za-z’'-]+(?:\s+(?:and|&)\s+[A-Z][A-Za-z’'-]+)?(?:\s+et al\.)?"
+CITATION=r'\((?:(?:see|e\.g\.)\s+)?'+AUTHOR+r',?\s*'+YEAR_LOCATOR+r'(?:;\s*'+AUTHOR+r',?\s*'+YEAR_LOCATOR+r')*\)|\('+YEAR_LOCATOR+r'\)'
+PROTECTED = re.compile(r'https?://[^\s<>]+|10\.\d{4,9}/[^\s<>]+|`[^`]+`|\bO\([^\n)]{1,60}\)|\[[\d,; -]+\]|\b[A-Z][a-z]+ et al\.(?:,? \d{4})?|'+CITATION)
 NUMBER = re.compile(r'(?<![A-Za-z0-9_])[-−+]?\d+(?:[.,]\d+)*(?:\s?%|[eE][-+]?\d+)?')
 WORDS=dict(zero=0,one=1,two=2,three=3,four=4,five=5,six=6,seven=7,eight=8,nine=9,ten=10,
            eleven=11,twelve=12,thirteen=13,fourteen=14,fifteen=15,sixteen=16,seventeen=17,eighteen=18,nineteen=19,
