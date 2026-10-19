@@ -26,6 +26,7 @@ from papertranslator.translation import blocking
     ('The project used a year-long intervention.','이 프로젝트는 1년간의 중재를 사용했다.'),
     ('The control group attended weekly sessions.','대조군은 주 1회 세션에 참여했다.'),
     ('Firsthand sources were used.','1차 자료가 사용되었다.'),
+    ('The studies (Example, 1991,1995,1997,2000) agreed.','연구들(Example, 1991, 1995, 1997, 2000)은 일치했다.'),
 ])
 def test_legitimate_academic_notation(source,target):
     assert not blocking(check(source,target))
@@ -85,6 +86,26 @@ def test_running_headers_do_not_break_page_continuation(tmp_path):
     joined=next(b for b in ir['blocks'] if len(b['source_page_indices'])==2)
     assert joined['source']=='The new paradigm improves the research methods.'
     assert any(f['raw_source'].endswith('para-') for f in joined['source_fragments'])
+
+
+def test_tall_ocr_header_is_excluded_from_continuing_body(tmp_path):
+    source=tmp_path/'tall-header.pdf'
+    with fitz.open() as doc:
+        for _ in range(3):doc.new_page(width=600,height=800)
+        doc.save(source)
+    calls=[]
+    def recognize(pixels):
+        scale=pixels.shape[0]/800;calls.append(True)
+        def line(text,y,height):
+            return [[[50*scale,y*scale],[550*scale,y*scale],[550*scale,(y+height)*scale],[50*scale,(y+height)*scale]],text,None]
+        header=line('Synthetic Treatment Studies',30,24)
+        if len(calls)==1:return [header,line('The children used themes and',700,14)]
+        if len(calls)==2:return [header,line('games to express their feelings.',95,14)]
+        return [header,line('Another paragraph ends here.',95,14)]
+    ir=analyze(source,[0,1,2],ocr_mode='force',ocr_engine=recognize)
+    assert sum(b['kind']=='running_header' for b in ir['blocks'])==3
+    joined=next(b for b in ir['blocks'] if len(b['source_page_indices'])>1)
+    assert joined['source']=='The children used themes and games to express their feelings.'
 
 
 def test_ocr_cache_reuses_same_raster_and_engine_signature(tmp_path):

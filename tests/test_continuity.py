@@ -29,6 +29,28 @@ def test_localization_does_not_excuse_real_unit_sign_or_number_errors(source,tar
     assert any(i['code'] in {'numbers','quantity'} for i in check(source,target))
 
 
+@pytest.mark.parametrize('source,target',[
+    ('Three quarters of participants agreed.','참가자의 4분의 3이 동의했다.'),
+    ('Two-thirds of the drawings were included.','그림의 3분의 2가 포함되었다.'),
+    ('One half of the sample agreed.','표본의 50%가 동의했다.'),
+    ('One third of the sample agreed.','표본의 삼분의 일이 동의했다.'),
+    ('Minus one half of the original value.','원래 값의 -1/2.'),
+])
+def test_exact_fractions_allow_only_equal_values(source,target):
+    assert not any(i['code'] in {'numbers','quantity'} for i in check(source,target))
+
+
+@pytest.mark.parametrize('source,target',[
+    ('Two-thirds of the drawings were included.','그림의 3분의 1이 포함되었다.'),
+    ('One half of the sample agreed.','표본의 60%가 동의했다.'),
+    ('Minus one half of the original value.','원래 값의 1/2.'),
+    ('Three quarters of participants agreed.','참가자의 4분의 3인 4명이 동의했다.'),
+    ('One third of the sample agreed.','표본의 33.3%가 동의했다.'),
+])
+def test_fraction_conversion_preserves_sign_and_exact_ratio(source,target):
+    assert any(i['code'] in {'numbers','quantity'} for i in check(source,target))
+
+
 def test_return_in_ordinary_prose_is_translated_but_code_is_preserved(tmp_path):
     source=tmp_path/'ordinary.pdf'
     with fitz.open() as doc:

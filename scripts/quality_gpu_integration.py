@@ -30,7 +30,7 @@ def main():
         'Research evidence does not replace clinical judgement. Clinicians should consider evidence together with their training, experience and the needs of each client.',
         'Economic uncertainty and depression can affect access to services. This discussion concerns the economy rather than a diagnosis of a mental health condition.',
         'The study found an association. It did not show that the treatment caused the improvement. The results should inform practice without being treated as proof of efficacy.',
-        'The study included 24 participants. Of the respondents, 75 per cent found the arts therapies helpful. The findings apply only to this sample and require further investigation.']
+        'The study included 24 participants. Of the respondents, 75 per cent found the arts therapies helpful. The findings apply only to this sample and require further investigation (Example and Writer, 2015).']
     with fitz.open() as document:
         page=document.new_page()
         for index,text in enumerate(paragraphs):
@@ -44,6 +44,7 @@ def main():
     quality=read_json(Path(state['output'])/'Quality.json')
     assert quality['refinement_processed']==4 and quality['failed_paragraphs']==0
     assert all(not r['refinement'].get('error') for r in quality['records'])
+    assert any('(Example and Writer, 2015)' in r['target'] for r in quality['records'])
     assert sha256(Path(state['output'])/'Original.pdf')==sha256(source)
     # A deliberate, documented test corruption forces the correction path.
     checkpoint=read_json(folder/'checkpoint.json')

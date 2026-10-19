@@ -2,9 +2,9 @@
 from collections import Counter
 import re
 import secrets
-from .quantities import equivalent_durations
+from .quantities import equivalent_durations,equivalent_fractions
 
-VERSION = 'quality-13'
+VERSION = 'quality-14'
 PROMPT_VERSION = 'contextual-paragraph-9'
 YEAR_REFERENCE=r'(?:1[5-9]|20)\d{2}[a-f]?'
 YEAR_LOCATOR=YEAR_REFERENCE+r'(?:\s*[,;]\s*'+YEAR_REFERENCE+r')*(?::\s*\d+(?:[-–]\d+)?)?'
@@ -164,13 +164,18 @@ def check(source, target):
     year=r'(?:1[5-9]|20)\d{2}[a-z]?'
     year_list=year+r'(?:\s*[,;]\s*'+year+r')+'
     citations=re.findall(r"\b[A-Z][A-Za-z’'-]{2,}(?:\s+et al\.)?\s*\(\s*("+year_list+r')\s*\)',source)
+    for citation in re.findall(CITATION,source):citations.extend(re.findall(year_list,citation))
     allowed_lists={re.sub(r'\s+','',value) for value in citations}
     def citation_spacing(text):
-        def replace(match):
-            if re.sub(r'\s+','',match[1]) not in allowed_lists:return match[0]
-            return '('+re.sub(r'([,;])\s*',r'\1 ',match[1])+')'
-        return re.sub(r'\(\s*('+year_list+r')\s*\)',replace,text)
+        def parenthetical(match):
+            def replace(years):
+                if re.sub(r'\s+','',years[0]) not in allowed_lists:return years[0]
+                return re.sub(r'([,;])\s*',r'\1 ',years[0])
+            return re.sub(year_list+r'(?=\s*[:;)])',replace,match[0])
+        return re.sub(r'\([^()\n]{1,500}\)',parenthetical,text)
     numeric_source,numeric_target,unmatched=equivalent_durations(citation_spacing(normalize_percent(source)),citation_spacing(normalize_percent(target)))
+    numeric_source,numeric_target,fraction_unmatched=equivalent_fractions(numeric_source,numeric_target)
+    unmatched+=fraction_unmatched
     # Lexical levels/modes are not added participant counts. Mask only the
     # corresponding Korean expression, bounded by its explicit source mentions.
     lexical=[(r'\bprimary\b',r'(?<!\d)1\s*차'),(r'\bsecondary\b',r'(?<!\d)2\s*차'),
@@ -187,7 +192,7 @@ def check(source, target):
     # digits corresponding to explicit written quantities/dates may be consumed.
     missing=a-b;added=(b-a)-allowed_written_numbers(numeric_source)
     if unmatched:
-        errors.append(dict(code='quantity',severity='major',message='기간의 값·단위가 원문과 같은지 확인하세요.',unmatched=unmatched))
+        errors.append(dict(code='quantity',severity='major',message='기간·분수의 값과 단위가 원문과 같은지 확인하세요.',unmatched=unmatched))
     if missing or added:
         errors.append(dict(code='numbers', severity='major', message='숫자·부호·개수를 원문과 대조하세요.', missing=list(missing.elements()), added=list(added.elements())))
     if re.search(r'\bp\s*[=<>≤≥]', source, re.I) and '유의수준' in target:

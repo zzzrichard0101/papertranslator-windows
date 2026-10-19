@@ -12,7 +12,7 @@ from .storage import atomic_json, safe_title, sha256, read_json
 import hashlib
 from .ocr import LocalOCR, page_blocks, signature
 
-PARSER = 'pymupdf-logical-paragraph-ir-9-header-edge-fragments'
+PARSER = 'pymupdf-logical-paragraph-ir-10-running-header-height'
 JOIN_WORDS=set('economic psychological paradigm practitioner practitioners particular individual individuals '
               'support supporting delivered delivery theories theory research professional professionals '
               'clinical objective subjective experience experiences observation observations systematic '
@@ -198,7 +198,7 @@ def analyze(source, selected, progress=lambda *_: None, ocr_mode='auto', cancel=
         # across a physical page boundary. Chapter titles below the margin remain.
         def header_key(unit,page):
             box=unit['bbox'];text=unit['source']
-            if box[1]<page['height']*.075 and box[3]<page['height']*.12 and box[3]-box[1]<=20 and 4<len(text)<160:
+            if box[1]<page['height']*.075 and box[3]<page['height']*.12 and box[3]-box[1]<=32 and 4<len(text)<160:
                 return re.sub(r'\W+','',text).casefold()
             return None
         keys=Counter(key for units,page in zip(extracted,pages) for key in

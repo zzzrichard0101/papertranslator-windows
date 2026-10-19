@@ -62,3 +62,52 @@ def equivalent_durations(source,target):
         for start,end in spans:chars[start:end]=' '*(end-start)
         return ''.join(chars)
     return mask(source,a),mask(target,b),unmatched
+
+
+def equivalent_fractions(source,target):
+    """Pair explicit word fractions with exact Korean/percent representations."""
+    denominators={'half':2,'halves':2,'third':3,'thirds':3,'quarter':4,'quarters':4,
+                  'fourth':4,'fourths':4,'fifth':5,'fifths':5,'sixth':6,'sixths':6,
+                  'seventh':7,'sevenths':7,'eighth':8,'eighths':8,'ninth':9,'ninths':9,'tenth':10,'tenths':10}
+    nums=r'(?:\d+(?:\.\d+)?|'+WORD+r'|an?|a)'
+    pattern=re.compile(r'(?<!\w)(?P<sign>minus\s+|negative\s+|[+−-]\s*)?(?P<num>'+nums+r')(?P<sep>[-\s]+)(?P<den>'+
+                       '|'.join(sorted(denominators,key=len,reverse=True))+r')\b',re.I)
+    originals=[]
+    for match in pattern.finditer(source):
+        following=source[match.end():]
+        if following.startswith('-') or re.match(r'\s*(?:of\s+(?:a|an|the)\s+)?(?:years?|days?|hours?|months?|weeks?|minutes?|seconds?|per\s+cent|percent)\b',following,re.I):continue
+        if match['den'].lower().startswith('quarter') and '-' not in match['sep'] and not re.match(r'\s+of\b',following,re.I):continue
+        if match['num'].lower() in {'a','an'} and re.search(r'\band\s+$',source[:match.start()],re.I):continue
+        numerator=Fraction(1) if match['num'].lower() in {'a','an'} else value(match['num'])
+        sign=-1 if match['sign'] and match['sign'].strip().lower() in {'minus','negative','-','−'} else 1
+        originals.append((match.start(),match.end(),sign*numerator/denominators[match['den'].lower()]))
+    sino=dict(일=1,이=2,삼=3,사=4,오=5,육=6,칠=7,팔=8,구=9,십=10)
+    korean={**KOREAN,**sino}
+    token=r'[+−-]?(?:\d+|'+'|'.join(sorted(korean,key=len,reverse=True))+r')'
+    def number(text):
+        sign=-1 if text.startswith(('-','−')) else 1;text=text.lstrip('+−-')
+        return sign*(Fraction(korean[text]) if text in korean else Fraction(text))
+    targets=[]
+    fraction=re.compile(r'(?<!\d)(?P<sign>마이너스\s*|음의\s*)?(?P<den>'+token+r')\s*분의\s*(?P<num>'+token+r')')
+    for match in fraction.finditer(target):
+        if re.match(r'\s*%',target[match.end():]):continue
+        try:amount=number(match['num'])/number(match['den'])*(-1 if match['sign'] else 1)
+        except ZeroDivisionError:continue
+        targets.append((match.start(),match.end(),amount))
+    for match in re.finditer(r'(?<![\w/:.])([-+−]?\d+)\s*/\s*(\d+)(?![\w/]|\s*%)',target):
+        if int(match[2]):targets.append((match.start(),match.end(),Fraction(match[1].replace('−','-'))/int(match[2])))
+    for match in re.finditer(r'(?<![A-Za-z0-9_./])[-+−]?\d+(?:\.\d+)?\s*%',target):
+        targets.append((match.start(),match.end(),Fraction(match[0][:-1].strip().replace('−','-'))/100))
+    for match in re.finditer(r'절반|반수',target):targets.append((match.start(),match.end(),Fraction(1,2)))
+    used=set();a=[];b=[];unmatched=[]
+    for start,end,amount in originals:
+        partner=next((i for i,t in enumerate(targets) if i not in used and t[2]==amount),None)
+        if partner is None:
+            if targets:unmatched.append(source[start:end])
+            continue
+        used.add(partner);a.append((start,end));b.append(targets[partner][:2])
+    def mask(text,spans):
+        chars=list(text)
+        for start,end in spans:chars[start:end]=' '*(end-start)
+        return ''.join(chars)
+    return mask(source,a),mask(target,b),unmatched
