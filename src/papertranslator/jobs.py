@@ -16,18 +16,25 @@ from .quality import PROMPT_VERSION, VERSION
 from .translation import translate_record
 from .ocr import signature, LOW_CONFIDENCE
 from .eta import TranslationETA, work_units
+from .refinement import policy, attach_context, run as refine_records
 from .storage import atomic_json, fingerprint, now, pages, read_json, root, safe_title, sha256, worker_lock
 
 TERMINAL = {'completed_with_warnings', 'failed', 'cancelled', 'interrupted'}
 
 
-def create_job(source, destination, page_spec='', profile='general', title='',model_key=None,independent_review=False,ocr_mode='auto'):
+def create_job(source, destination, page_spec='', profile='general', title='',model_key=None,independent_review=False,ocr_mode='auto',quality_mode='contextual'):
     signature(ocr_mode)
     source=Path(source).resolve(); destination=Path(destination).resolve()
     if source.suffix.lower()!='.pdf' or not source.is_file():
         raise ValueError('PDF 파일을 선택하세요.')
     if not destination.is_dir():
         raise ValueError('저장할 폴더가 없습니다. 폴더를 다시 선택하세요.')
+    cloud=None
+    if quality_mode=='hybrid':
+        from .credentials import load_key
+        cloud=read_json(root()/'settings.json',{}).get('cloud',{})
+        if not cloud.get('enabled') or not cloud.get('model','').endswith(':free') or not load_key():
+            raise ValueError('무료 API 설정에서 키·무료 모델·전송 범위를 확인하세요.')
     jid=uuid.uuid4().hex
     folder=root()/'jobs'/jid; folder.mkdir(parents=True)
     state=dict(id=jid, created_at=now(), status='queued', stage='대기', source=str(source), source_name=source.name,
@@ -36,6 +43,10 @@ def create_job(source, destination, page_spec='', profile='general', title='',mo
                output=None, error=None, pid=None, cache_hits=0)
     # Snapshot before worker launch so later global changes cannot affect this job.
     state['model']=resolve_model(model_key)
+    if quality_mode!='legacy' and state['model'].get('adapter')!='translategemma':
+        state['model']['options']={**state['model'].get('options',{}),'temperature':.2}
+    state['quality_policy']=policy(quality_mode,state['model'],read_json(root()/'model_registry.json',{}))
+    if cloud:state['quality_policy']['cloud']={k:cloud[k] for k in ['enabled','model','max_requests']}
     state['ocr_mode']=ocr_mode
     if independent_review:
         reviewer=read_json(root()/'model_registry.json',{}).get('reviewer')
@@ -90,7 +101,9 @@ def _run(folder, retry_failed):
             selected=pages(state['page_spec'],len(doc)); total_pages=len(doc)
         save('analyzing','PDF 구조 분석',source_sha256=sha256(original),total_pages=total_pages,selected=selected)
         ir=analyze(original,selected,lambda p: save(stage='PDF 분석 · 필요 시 로컬 OCR',current_source_page=p),
-                   ocr_mode=state.get('ocr_mode','off'),cancel=cancel)
+                   ocr_mode=state.get('ocr_mode','off'),cancel=cancel,cache_dir=folder/'ocr-cache')
+        quality_policy=state.get('quality_policy',{'mode':'legacy'})
+        if quality_policy['mode']!='legacy':attach_context(ir,state['title'],state['profile'])
         atomic_json(folder/'ir.json',ir)
         registry=read_json(root()/'model_registry.json')
         if not registry: raise RuntimeError('모델 설치가 아직 완료되지 않았습니다.')
@@ -98,7 +111,7 @@ def _run(folder, retry_failed):
         state['model']=model
         stamp=fingerprint(dict(hash=state['source_sha256'], selected=selected, profile=state['profile'],
                                model=model, parser=PARSER, prompt=PROMPT_VERSION, quality=VERSION,
-                               runtime=registry['runtime_release'], options=options_for(model),ocr=ir['ocr']))
+                               runtime=registry['runtime_release'], options=options_for(model),ocr=ir['ocr'],quality_policy=quality_policy))
         checkpoint=read_json(folder/'checkpoint.json',{})
         records=checkpoint.get('records',{}) if checkpoint.get('fingerprint')==stamp else {}
         if retry_failed:
@@ -140,6 +153,19 @@ def _run(folder, retry_failed):
                 atomic_json(folder/'checkpoint.json',dict(fingerprint=stamp,records=records))
                 save(completed=len(records),**progress_eta())
         if cancel(): raise Cancelled()
+        if quality_policy['mode'] in {'ensemble','hybrid'}:
+            save('refining','다중 모델 원문 대조 교정',eta_seconds=None,eta=None)
+            refine_records(records,ir,quality_policy,folder,state['profile'],LlamaBackend,
+                lambda:atomic_json(folder/'checkpoint.json',dict(fingerprint=stamp,records=records)),
+                lambda message:save(stage=message),cancel)
+        if cancel():raise Cancelled()
+        if quality_policy['mode']=='hybrid':
+            from .cloud import review_records
+            save('cloud_reviewing','무료 API 선택 문단 검토',eta_seconds=None,eta=None)
+            review_records(records,ir,quality_policy,folder,
+                lambda:atomic_json(folder/'checkpoint.json',dict(fingerprint=stamp,records=records)),
+                lambda message:save(stage=message),cancel)
+        if cancel():raise Cancelled()
         if state.get('reviewer'):
             reviewer=state['reviewer']
             eligible=[r for r in records.values() if r['status']=='translated']
@@ -196,7 +222,9 @@ def _run(folder, retry_failed):
         save('completed_with_warnings','완료 · 원문 대조 필요',output=str(dest),eta_seconds=None,pid=None,
              quality_summary=dict(failed=quality['failed_paragraphs'],warnings=quality['warnings_paragraphs'],
                                   translated=quality['translated_paragraphs'],semantic_review_coverage=quality['semantic_review_coverage'],
-                                  ocr_pages=quality['ocr_pages'],ocr_low_confidence_lines=quality['ocr_low_confidence_lines']))
+                                  ocr_pages=quality['ocr_pages'],ocr_low_confidence_lines=quality['ocr_low_confidence_lines'],
+                                  ocr_unscored_lines=quality['ocr_unscored_lines'],
+                                  refinement_processed=quality['refinement_processed'],refinement_accepted=quality['refinement_accepted']))
     except Cancelled:
         save('cancelled','취소됨 · 이어하기 가능',pid=None,eta_seconds=None)
     except Exception as exc:

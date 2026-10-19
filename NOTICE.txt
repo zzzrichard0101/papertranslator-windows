@@ -31,6 +31,15 @@ Built-in Korean PDF fonts come from PyMuPDF; its bundled font notices apply.
 The UI loads Windows-installed Malgun Gothic. Windows font files are not shipped.
 
 Bundled offline CPU OCR:
+English LSTM data from tesseract-ocr/tessdata_best: Apache-2.0.
+Revision e12c65a915945e4c28e237a9b52bc4a8f39a0cec, eng.traineddata unchanged.
+SHA256 8280aed0782fe27257a68ea10fe7ef324ca0f8d85bd2fd145d1c2b560bcb66ba.
+https://github.com/tesseract-ocr/tessdata_best/tree/e12c65a915945e4c28e237a9b52bc4a8f39a0cec
+License copy: docs/third-party/Tessdata-LICENSE.txt.
+OCR uses the Tesseract support in the installed MuPDF build. MuPDF's bundled
+third-party notices apply. Text extraction does not expose line confidence;
+the app records this as unscored and never reports invented confidence.
+
 RapidOCR / rapidocr-onnxruntime 1.4.4: Apache-2.0.
 Copyright (c) 2021 RapidOCR Authors / RapidAI. All rights reserved.
 https://github.com/RapidAI/RapidOCR/tree/v1.4.4

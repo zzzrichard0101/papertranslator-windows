@@ -4,13 +4,35 @@ import json
 from pathlib import Path
 import re
 import shutil
+from collections import Counter
 
 import pymupdf as fitz
 
-from .storage import atomic_json, safe_title, sha256
+from .storage import atomic_json, safe_title, sha256, read_json
+import hashlib
 from .ocr import LocalOCR, page_blocks, signature
 
-PARSER = 'pymupdf-logical-paragraph-ir-4-ocr'
+PARSER = 'pymupdf-logical-paragraph-ir-7-scan-margins'
+JOIN_WORDS=set('economic psychological paradigm practitioner practitioners particular individual individuals '
+              'support supporting delivered delivery theories theory research professional professionals '
+              'clinical objective subjective experience experiences observation observations systematic '
+              'practice knowledge acquisition implementation effectiveness efficacy reliability validity '
+              'intervention interventions condition conditions information interpretation development '
+              'demonstrate demonstration representative representation organisation organization '
+              'education educational population populations experimental experiment participation '
+              'significant significance qualitative quantitative literature method methodology '
+              'psychotherapy discipline disciplines construction constructivism epistemology '
+              'contribution treatment treatments continuing inevitable technological technology '
+              'university different difference differences provision authority contradiction '
+              'contradictions situate situated depression uncertainty'.split())
+
+
+def join_lines(left,right):
+    if left.endswith('-') and right[:1].islower():
+        a=re.search(r'([A-Za-z]+)-$',left);b=re.match(r'([a-z]+)',right)
+        remove=bool(a and b and (a[1]+b[1]).lower() in JOIN_WORDS)
+        return (left[:-1] if remove else left)+right,remove
+    return left+(' ' if left else '')+right,False
 
 
 def protected_kind(text, spans):
@@ -35,13 +57,14 @@ def paragraph_units(page, text_blocks=None):
         nonlocal current
         if not current:return
         text=''
+        raw=' '.join(line['text'].strip() for line in current)
         for line in current:
             part=line['text'].strip()
-            text+=('' if not text or (text.endswith('-') and part[:1].islower()) else ' ')+part
+            text,_=join_lines(text,part)
         bbox=[min(l['bbox'][0] for l in current),min(l['bbox'][1] for l in current),
               max(l['bbox'][2] for l in current),max(l['bbox'][3] for l in current)]
         spans=[s for l in current for s in l['spans']]
-        units.append(dict(source=text,bbox=bbox,kind=current[0]['kind'],preserve=False,style_runs=spans))
+        units.append(dict(source=text,raw_source=raw,bbox=bbox,kind=current[0]['kind'],preserve=False,style_runs=spans))
         current=[]
     for block in (page.get_text('dict',sort=True)['blocks'] if text_blocks is None else text_blocks):
         if block['type']!=0:continue
@@ -109,13 +132,21 @@ def segments(text, limit=1800):
     return result
 
 
-def analyze(source, selected, progress=lambda *_: None, ocr_mode='auto', cancel=lambda: False, ocr_engine=None):
-    doc = fitz.open(source); pages = []; blocks = []
+def analyze(source, selected, progress=lambda *_: None, ocr_mode='auto', cancel=lambda: False, ocr_engine=None,cache_dir=None):
+    doc = fitz.open(source); pages = []; blocks = []; extracted=[]
     engine=ocr_engine
     def recognize(pixels):
         nonlocal engine
+        cached=None
+        if cache_dir:
+            cache=Path(cache_dir);cache.mkdir(parents=True,exist_ok=True)
+            key=hashlib.sha256(json.dumps(signature(ocr_mode),sort_keys=True).encode()+pixels.tobytes()).hexdigest()
+            cached=cache/(key+'.json');saved=read_json(cached,{})
+            if saved.get('key')==key and isinstance(saved.get('rows'),list):return saved['rows']
         if engine is None:engine=LocalOCR()
-        return engine(pixels)
+        rows=engine(pixels)
+        if cached:atomic_json(cached,dict(key=key,rows=rows))
+        return rows
     try:
         if doc.needs_pass:
             raise ValueError('암호화된 PDF입니다. 암호를 해제한 사본을 선택하세요.')
@@ -139,21 +170,69 @@ def analyze(source, selected, progress=lambda *_: None, ocr_mode='auto', cancel=
             units=paragraph_units(page,text_blocks)
             for unit in units:
                 unit['source_page_index']=index
-                scores=[s['ocr_confidence'] for s in unit['style_runs'] if s.get('extraction')=='ocr']
+                if unit['bbox'][1]>page.rect.height*.94 and len(unit['source'])<=20:
+                    unit.update(kind='page_marker',preserve=True,preserve_reason='page_margin')
+                # Keep OCR specks in the IR, but not between the last/first body
+                # lines. Only very short non-word fragments at the outer margin.
+                box=unit['bbox']
+                outer=(box[3]<page.rect.height*.07 or box[1]>page.rect.height*.91 or
+                       box[2]<page.rect.width*.04 or box[0]>page.rect.width*.96)
+                if (outer and unit.get('preserve_reason')=='symbol' and len(unit['source'])<=20 and
+                    all(s.get('extraction')=='ocr' for s in unit['style_runs'])):
+                    unit.update(kind='page_marker',preserve=True,preserve_reason='ocr_margin_fragment')
+                scores=[s['ocr_confidence'] for s in unit['style_runs'] if isinstance(s.get('ocr_confidence'),(int,float))]
                 methods=set(s.get('extraction','native') for s in unit['style_runs'])
                 method='mixed' if len(methods)>1 else next(iter(methods))
                 unit['fragments']=[dict(source_page_index=index,bbox=unit['bbox'],source=unit['source'],
-                                        extraction=method,ocr_confidence_min=min(scores) if scores else None)]
-            # Page numbers are metadata and cannot prevent a genuine continuation.
-            body=[u for u in units if u['kind']!='page_marker']
-            prior=next((u for u in reversed(blocks) if u['kind']!='page_marker'),None)
-            if pages and prior and body and continuation(prior,body[0],pages[-1],page_info):
+                                        raw_source=unit.get('raw_source',unit['source']),extraction=method,ocr_confidence_min=min(scores) if scores else None)]
+            extracted.append(units)
+            pages.append(page_info)
+        # Repeated running titles are metadata; do not let them sever sentences
+        # across a physical page boundary. Chapter titles below the margin remain.
+        def header_key(unit,page):
+            box=unit['bbox'];text=unit['source']
+            if box[1]<page['height']*.075 and box[3]<page['height']*.12 and box[3]-box[1]<=20 and 4<len(text)<160:
+                return re.sub(r'\W+','',text).casefold()
+            return None
+        keys=Counter(key for units,page in zip(extracted,pages) for key in
+                     set(filter(None,(header_key(u,page) for u in units))))
+        metadata={'page_marker','running_header'}
+        for page_number,(units,page_info) in enumerate(zip(extracted,pages)):
+            page_text=' '.join(unit['source'] for unit in units)
+            labels=[unit['source'].strip().casefold() for unit in units if unit['bbox'][1]<page_info['height']*.3]
+            reference_section=None
+            if any(re.fullmatch(r'(?:references|bibliography)(?:\s+\d{1,4})?',label) for label in labels) and len(re.findall(r'\([12]\d{3}[a-z]?\)',page_text))>=3:
+                reference_section='references'
+            elif any(re.match(r'^index\b',label) and len(label)<45 for label in labels) and len(re.findall(r'\b\d{1,3}\b',page_text))>=10:
+                reference_section='index'
+            elif page_number+1<len(pages) and pages[page_number+1]['source_page_index']==page_info['source_page_index']+1:
+                # A scan can miss the large title on the first index page. Require
+                # both strong index syntax and an immediately following title.
+                next_labels=[u['source'].strip().casefold() for u in extracted[page_number+1]
+                             if u['bbox'][1]<pages[page_number+1]['height']*.3]
+                if (any(re.match(r'^index\b',label) and len(label)<45 for label in next_labels) and
+                    len(re.findall(r'\b\d{1,3}\b',page_text))>=40 and
+                    len(re.findall(r'\bsee also\b',page_text,re.I))>=2):
+                    reference_section='index'
+                    page_info['warnings'].append('색인 형식과 다음 쪽 제목을 확인해 항목을 원문으로 보존했습니다. 복잡한 열은 원본을 보세요.')
+            for unit in units:
+                key=header_key(unit,page_info)
+                if key and keys[key]>=3:
+                    unit.update(kind='running_header',preserve=True,preserve_reason='repeated_running_title')
+                label=unit['source'].strip().casefold()
+                if reference_section and label in {'references','bibliography','index'} and unit['kind']!='running_header':
+                    unit.update(kind='heading',preserve=False)
+                elif reference_section and unit['kind'] not in metadata:
+                    unit.update(kind='reference',preserve=True,preserve_reason=reference_section)
+            body=[u for u in units if u['kind'] not in metadata]
+            prior=next((u for u in reversed(blocks) if u['kind'] not in metadata),None)
+            if page_number and prior and body and continuation(prior,body[0],pages[page_number-1],page_info):
                 first=body[0]
-                separator='' if prior['source'].endswith('-') and first['source'][:1].islower() else ' '
-                prior['source']+=separator+first['source'];prior['fragments']+=first['fragments']
+                combined,removed=join_lines(prior['source'],first['source'])
+                if removed:prior['fragments'][-1]['source']=prior['fragments'][-1]['source'][:-1]
+                prior['source']=combined;prior['fragments']+=first['fragments']
                 prior['style_runs']+=first['style_runs'];units.remove(first)
             blocks.extend(units)
-            pages.append(page_info)
         logical=[];by_page={p['source_page_index']:p for p in pages}
         for number,block in enumerate(blocks):
             source=block['source'];cursor=0;offset=0;spans=[]
@@ -240,7 +319,7 @@ def flow_pdf(ir, records, path, title):
             y+=8
         for bid in p['block_ids']:
             record = records[bid]; failed=record['status']=='failed'
-            if record['kind']=='page_marker':continue
+            if record['kind'] in {'page_marker','running_header'}:continue
             indices=record.get('source_page_indices',[index])
             connection_label=f'[연결 문단: 원본 {indices[0]+1}-{indices[-1]+1}쪽]' if len(indices)>1 else ''
             text = record.get('candidate') if failed and record.get('candidate') else record['target']
@@ -295,7 +374,8 @@ def export(ir, records, original, folder, title, job, cancel=lambda: False):
         reviewed=[r for r in translated if r.get('review',{}).get('evidence_validated')]
         coverage=len(reviewed)/len(translated) if translated else 0
         review_status='not_performed' if not reviewed else ('all_machine_reviewed' if len(reviewed)==len(translated) else 'partially_machine_reviewed')
-        quality=dict(schema=4, ocr=ir.get('ocr'), ocr_pages=sum(p.get('ocr',{}).get('lines',0)>0 for p in ir['pages']),
+        quality=dict(schema=5, ocr=ir.get('ocr'), ocr_pages=sum(p.get('ocr',{}).get('lines',0)>0 for p in ir['pages']),
+                     ocr_unscored_lines=sum(p.get('ocr',{}).get('unscored_lines',0) for p in ir['pages']),
                      ocr_low_confidence_lines=sum(p.get('ocr',{}).get('low_confidence_lines',0) for p in ir['pages']),
                      needs_review=True, file_generation='completed', semantic_review=review_status,
                      semantic_review_coverage=coverage, reviewed_paragraphs=len(reviewed),human_approved=False,
@@ -307,6 +387,13 @@ def export(ir, records, original, folder, title, job, cancel=lambda: False):
                      translated_paragraphs=sum(r['status']=='translated' for r in records.values()),
                      preserved_paragraphs=sum(r['status']=='preserved' for r in records.values()),
                      page_markers=sum(r['kind']=='page_marker' for r in records.values()),
+                     running_headers=sum(r['kind']=='running_header' for r in records.values()),
+                     reference_units=sum(r['kind']=='reference' for r in records.values()),
+                     quality_policy=job.get('quality_policy',{'mode':'legacy'}),
+                     refinement_processed=sum(bool(r.get('refinement')) for r in records.values()),
+                     refinement_accepted=sum(r.get('refinement',{}).get('accepted',False) for r in records.values()),
+                     cloud_review_completed=sum(r.get('cloud_review',{}).get('status')=='completed' for r in records.values()),
+                     cloud_review_attempted=sum(bool(r.get('cloud_review',{}).get('attempted')) for r in records.values()),
                      connected_paragraphs=sum(len(r.get('source_page_indices',[]))>1 for r in records.values()),
                      failed_candidate_paragraphs=sum(r['status']=='failed' and bool(r.get('candidate')) for r in records.values()),
                      assistant_edited_paragraphs=sum(bool(r.get('assistant_post_edit')) for r in records.values()),
@@ -320,14 +407,23 @@ def export(ir, records, original, folder, title, job, cancel=lambda: False):
                 issues+=' / OCR 인식 원문 · 이미지와 대조 필요'+(f' · 최소 신뢰도 {score:.0%}' if score is not None else '')
             if r.get('review'):
                 issues+=' / 검수 '+r['review'].get('verdict','uncertain')+': '+r['review'].get('explanation_ko','')
+            refinement=r.get('refinement',{})
+            if refinement:
+                issues+=' / 다중 모델 교정: '+('후보 반영 · 인간 승인 없음' if refinement.get('accepted') else '기존 번역 유지')
+                issues+=' / '+refinement.get('explanation_ko','')
+            if r.get('cloud_review'):
+                issues+=' / 무료 API: '+r['cloud_review'].get('status','not_performed')+' · 인간 승인 없음'
             target=r['target']
             if r['status']=='failed' and r.get('candidate'):
                 issues='자동 검사 미통과: 아래는 승인되지 않은 검토용 번역 후보입니다. / '+issues
                 target=r['candidate']
             page_label=', '.join(str(i+1) for i in r.get('source_page_indices',[r['source_page_index']]))
+            history=(f'<details><summary>교정 전 번역과 원문 인용 근거</summary><pre>{html.escape(refinement.get("draft",""))}</pre>'
+                     f'<p>원문 근거: {html.escape(refinement.get("source_evidence",""))}</p>'
+                     f'<p>번역 근거: {html.escape(refinement.get("draft_evidence",""))}</p></details>') if refinement else ''
             sections.append(f'<article><h2>원본 {page_label}쪽 · {html.escape(r["id"])}</h2>'
                             f'<p class="warning">{html.escape(issues)}</p><div class="pair"><pre>{html.escape(r["source"])}</pre>'
-                            f'<pre lang="ko">{html.escape(target)}</pre></div></article>')
+                            f'<pre lang="ko">{html.escape(target)}</pre></div>{history}</article>')
         review='''<!doctype html><html lang="ko"><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"><title>번역 검토</title><style>body{font:16px/1.7 'Malgun Gothic',sans-serif;margin:40px;background:#f4f6f8;color:#152233}header,article{max-width:1280px;margin:20px auto;padding:24px;background:white;border-radius:12px}h2{font-size:16px}.pair{display:grid;grid-template-columns:1fr 1fr;gap:30px}pre{white-space:pre-wrap;font:inherit;overflow-wrap:anywhere}.warning{color:#9a4a10}@media(max-width:700px){.pair{grid-template-columns:1fr}}</style><header><h1>영한 문단 검토</h1><p>초기 개발판 · 자동 검사는 의미 정확도를 보증하지 않습니다. 검수 범위와 판정은 Quality.json에 기록됩니다.</p></header>'''+''.join(sections)+'</html>'
         (folder/'Review.html').write_text(review,encoding='utf-8')
         fields=dict(제목=title, 원본파일=job['source_name'], 번역일=job['created_at'], 원본SHA256=job['source_sha256'],

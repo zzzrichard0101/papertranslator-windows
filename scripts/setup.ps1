@@ -4,6 +4,8 @@ Push-Location (Split-Path $PSScriptRoot -Parent)
 try {
     & uv sync --frozen --group dev
     if ($LASTEXITCODE -ne 0) { throw 'Dependency setup failed' }
+    & uv run python scripts/fetch_ocr_models.py
+    if ($LASTEXITCODE -ne 0) { throw 'English OCR setup failed' }
     & uv run python scripts/bootstrap.py
     if ($LASTEXITCODE -ne 0) { throw 'Runtime/model setup failed' }
     $modelKey = 'hy7b'

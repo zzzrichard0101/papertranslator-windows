@@ -60,7 +60,7 @@ class Window(QMainWindow):
         side.addWidget(QLabel(f'{__version__}  ·  PUBLIC ALPHA'))
         layout.addWidget(sidebar)
         panel=QWidget(); body=QVBoxLayout(panel); body.setContentsMargins(36,26,36,22); body.setSpacing(13)
-        kicker=QLabel('영어 → 한국어  /  OFFLINE INFERENCE'); kicker.setObjectName('kicker'); body.addWidget(kicker)
+        kicker=QLabel('영어 → 한국어  /  기본 로컬 · 선택 API'); kicker.setObjectName('kicker'); body.addWidget(kicker)
         heading=QLabel('논문을 한국어로 읽기'); heading.setObjectName('heading'); body.addWidget(heading)
         desc=QLabel('원문과 번역, 영한 대조본을 한 폴더에 저장합니다.'); body.addWidget(desc)
         self.drop=DropZone(self); body.addWidget(self.drop)
@@ -71,7 +71,7 @@ class Window(QMainWindow):
         for label,value in [('자동 · 스캔/이미지 속 글자 인식','auto'),('끄기 · PDF 텍스트만 사용','off'),('강제 · 모든 쪽을 이미지로 다시 인식','force')]:self.ocr_choice.addItem(label,value)
         self.ocr_choice.setToolTip('영어 인쇄체용 로컬 CPU OCR. 강제 모드는 기존 텍스트 대신 OCR 결과를 사용합니다.')
         form.addRow('OCR',self.ocr_choice)
-        self.profile=QComboBox(); self.profile.addItem('일반 학술','general'); self.profile.addItem('미술치료 · 정신분석','art_therapy'); self.profile.addItem('컴퓨터공학','computer_science'); form.addRow('분야 기록',self.profile)
+        self.profile=QComboBox(); self.profile.addItem('일반 학술','general'); self.profile.addItem('미술치료 · 정신분석','art_therapy'); self.profile.addItem('컴퓨터공학','computer_science'); form.addRow('분야·용어',self.profile)
         self.model_choice=QComboBox()
         registry=read_json(root()/'model_registry.json',{})
         for key,model in catalog(registry).items():
@@ -81,9 +81,19 @@ class Window(QMainWindow):
         self.model_choice.currentIndexChanged.connect(self.model_changed)
         form.addRow('번역 모델',self.model_choice)
         self.review_choice=QCheckBox('다른 계열 모델로 의미 검수 · 추가 시간 소요')
-        form.addRow('추가 검수',self.review_choice)
+        self.review_choice.hide()
+        self.quality_choice=QComboBox()
+        for label,value in [('문맥·용어 정리 · 단일 모델','contextual'),('정밀 · 다중 모델 교정 · 추가 시간','ensemble'),
+                            ('혼합 · 정밀 + 무료 API 선택 검토','hybrid'),('기본 · 기존 단일 모델','legacy')]:self.quality_choice.addItem(label,value)
+        default_quality='ensemble' if any(k in catalog(registry) for k in ['qwen38','qwen30b']) else 'contextual'
+        self.quality_choice.setCurrentIndex(max(0,self.quality_choice.findData(self.settings.get('quality_mode',default_quality))))
+        self.quality_choice.currentIndexChanged.connect(self.quality_changed)
+        quality_row=QHBoxLayout();quality_row.addWidget(self.quality_choice)
+        self.api_btn=QPushButton('무료 API 설정');self.api_btn.clicked.connect(self.api_settings);quality_row.addWidget(self.api_btn)
+        self.api_btn.setFixedSize(130,36)
+        form.addRow('교정 방식',quality_row)
         row=QHBoxLayout(); self.dest=QLineEdit(self.destination); self.dest.setReadOnly(True); row.addWidget(self.dest)
-        self.dest_btn=QPushButton('폴더 선택'); self.dest_btn.clicked.connect(self.pick_destination); row.addWidget(self.dest_btn); form.addRow('결과 저장',row)
+        self.dest_btn=QPushButton('폴더 선택'); self.dest_btn.setFixedHeight(38); self.dest_btn.clicked.connect(self.pick_destination); row.addWidget(self.dest_btn); form.addRow('결과 저장',row)
         body.addLayout(form)
         self.model=QLabel(); self.model.setWordWrap(True); self.model.setObjectName('model'); body.addWidget(self.model)
         actions=QHBoxLayout(); self.start=QPushButton('번역 시작'); self.start.setObjectName('primary'); self.start.clicked.connect(self.start_job)
@@ -137,12 +147,14 @@ class Window(QMainWindow):
     def new_job(self):
         if self.active(): return
         self.folder=None; self.source=None; self.title.clear(); self.page_spec.clear()
+        preferred=self.settings.get('quality_mode','ensemble' if any(k in catalog() for k in ['qwen38','qwen30b']) else 'contextual')
+        self.quality_choice.setCurrentIndex(max(0,self.quality_choice.findData(preferred)))
         self.drop.setText('PDF를 여기에 놓거나 클릭해서 선택하세요\n영어 학술 PDF · 로컬 처리'); self.refresh()
 
     def start_job(self):
         try:
             if not self.source: raise ValueError('PDF를 먼저 선택하세요.')
-            self.folder=create_job(self.source,self.destination,self.page_spec.text(),self.profile.currentData(),self.title.text(),self.model_choice.currentData(),self.review_choice.isChecked(),ocr_mode=self.ocr_choice.currentData())
+            self.folder=create_job(self.source,self.destination,self.page_spec.text(),self.profile.currentData(),self.title.text(),self.model_choice.currentData(),self.review_choice.isChecked(),ocr_mode=self.ocr_choice.currentData(),quality_mode=self.quality_choice.currentData())
             self.launch()
         except Exception as exc: QMessageBox.warning(self,'시작할 수 없습니다',str(exc))
 
@@ -150,6 +162,14 @@ class Window(QMainWindow):
         self.settings['model_key']=self.model_choice.currentData()
         atomic_json(root()/'settings.json',self.settings)
         self.refresh()
+
+    def quality_changed(self,*_):
+        self.settings['quality_mode']=self.quality_choice.currentData()
+        atomic_json(root()/'settings.json',self.settings)
+
+    def api_settings(self):
+        from .api_dialog import ApiDialog
+        ApiDialog(self).exec();self.settings=read_json(root()/'settings.json',{})
 
     def launch(self,retry=False):
         if self.active(): return
@@ -188,6 +208,9 @@ class Window(QMainWindow):
         self.destination=state.get('destination',self.destination); self.dest.setText(self.destination)
         self.profile.setCurrentIndex(max(0,self.profile.findData(state.get('profile','general'))))
         self.ocr_choice.setCurrentIndex(max(0,self.ocr_choice.findData(state.get('ocr_mode','off'))))
+        self.quality_choice.blockSignals(True)
+        self.quality_choice.setCurrentIndex(max(0,self.quality_choice.findData(state.get('quality_policy',{}).get('mode','legacy'))))
+        self.quality_choice.blockSignals(False)
         self.drop.setText(state.get('source_name','PDF')+'\n저장된 작업'); self.refresh()
 
     def refresh_history(self):
@@ -208,11 +231,11 @@ class Window(QMainWindow):
         self.review_choice.setEnabled(not active and bool(can_review))
         if not can_review:self.review_choice.setChecked(False)
         self.model.setText('로컬 모델  '+chosen.get('id','설치 대기')+'  ·  '+chosen.get('status_ko','비교 중 · 의미 검수 필요'))
-        for w in [self.drop,self.title,self.page_spec,self.profile,self.model_choice,self.ocr_choice,self.dest_btn,self.new_btn,self.history]: w.setEnabled(not active)
+        for w in [self.drop,self.title,self.page_spec,self.profile,self.model_choice,self.ocr_choice,self.quality_choice,self.api_btn,self.dest_btn,self.new_btn,self.history]: w.setEnabled(not active)
         self.start.setEnabled(not active and self.source is not None and bool(registry))
         self.cancel_btn.setEnabled(active)
         another_worker=bool(state.get('pid') and psutil.pid_exists(state['pid']))
-        self.resume.setEnabled(not active and not another_worker and bool(state) and state.get('status') in {'cancelled','interrupted','failed','queued','preparing','analyzing','translating','typesetting','saving'})
+        self.resume.setEnabled(not active and not another_worker and bool(state) and state.get('status') in {'cancelled','interrupted','failed','queued','preparing','analyzing','translating','refining','cloud_reviewing','reviewing','typesetting','saving'})
         self.retry.setEnabled(not active and bool(state.get('quality_summary',{}).get('failed')))
         has_output=bool(state.get('output')) and Path(state['output']).is_dir()
         for w in [self.open_btn,self.ko_btn,self.dual_btn,self.review_btn,self.obsidian_btn]: w.setEnabled(has_output)
@@ -221,7 +244,7 @@ class Window(QMainWindow):
             self.detail.setText('경과 —  /  남은 시간 —'); self.result.setText('결과 폴더에 Papers/<제목>이 새로 만들어집니다.'); return
         self.stage.setText(state.get('stage','대기'))
         total=state.get('total',0); completed=state.get('completed',0)
-        if active and state.get('status') in {'preparing','analyzing','typesetting','saving'}:
+        if active and state.get('status') in {'preparing','analyzing','refining','cloud_reviewing','reviewing','typesetting','saving'}:
             self.bar.setRange(0,0)
         else:
             self.bar.setRange(0,max(total,1)); self.bar.setValue(completed)
@@ -235,6 +258,8 @@ class Window(QMainWindow):
         elif state.get('quality_summary'):
             q=state['quality_summary']; self.result.setText(f'번역 {q["translated"]}문단 · 원문 보존 실패 {q["failed"]}문단 · 경고 {q["warnings"]}문단 · 기계 의미 검수 {q.get("semantic_review_coverage",0):.0%}')
             if q.get('ocr_pages'):self.result.setText(self.result.text()+f'\nOCR {q["ocr_pages"]}쪽 · 낮은 인식 신뢰도 {q.get("ocr_low_confidence_lines",0)}줄 · 이미지 원문 대조 필요')
+            if q.get('ocr_unscored_lines'):self.result.setText(self.result.text()+f' · 점수 미제공 {q["ocr_unscored_lines"]}줄')
+            if q.get('refinement_processed'):self.result.setText(self.result.text()+f'\n다중 모델 교정 {q["refinement_processed"]}문단 · 후보 반영 {q.get("refinement_accepted",0)}문단 · 인간 승인 없음')
         else: self.result.setText('문단별 기록 자동 저장 · 재개 시 완료된 문단 재사용')
 
     def poll_gpu(self):

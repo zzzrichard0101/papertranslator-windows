@@ -10,6 +10,8 @@ work/
 *.spec
 *.log
 *.gguf
+*.traineddata
+**/ocr_models/
 *.part
 *.converting
 *.zip

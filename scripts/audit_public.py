@@ -21,7 +21,7 @@ def findings(path,data):
     result=[];parts=Path(path).parts
     if not (path in TOP or path in DATA or (parts and parts[0] in DIRECTORIES)):
         result.append((path,0,'file outside publication allowlist'))
-    if '__pycache__' in parts or Path(path).suffix.lower() in {'.pyc','.pdf','.gguf','.onnx','.safetensors','.pt','.pth','.exe','.dll','.pyd','.log','.zip','.png','.jpg','.jpeg','.webp'}:
+    if '__pycache__' in parts or Path(path).suffix.lower() in {'.pyc','.pdf','.gguf','.onnx','.traineddata','.safetensors','.pt','.pth','.exe','.dll','.pyd','.log','.zip','.png','.jpg','.jpeg','.webp'}:
         result.append((path,0,'generated/private/binary file'))
     if len(data)>1024*1024:result.append((path,0,'file larger than 1 MiB'))
     try:text=data.decode('utf-8-sig')

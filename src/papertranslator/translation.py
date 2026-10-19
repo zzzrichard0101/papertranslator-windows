@@ -3,7 +3,7 @@ from .backend import Cancelled
 from .quality import check,make_prompt,protect,restore
 from .storage import atomic_json
 
-BLOCKING={'numbers','quantity','empty','untranslated','new_markup','embedded_han'}
+BLOCKING={'numbers','quantity','empty','untranslated','new_markup','embedded_han','foreign_script','economic_depression'}
 
 
 def blocking(issues):
@@ -13,7 +13,7 @@ def blocking(issues):
 def translate_record(backend,block,profile,adapter,folder):
     record={k:block[k] for k in ['id','source_page_index','source_page_indices','source_fragments','bbox','kind','source']}
     record.update(target=block['source'],status='failed',issues=[],attempts=0,seconds=0.)
-    text,mapping=protect(block['source']);base=make_prompt(text,mapping,profile,adapter)
+    text,mapping=protect(block['source']);base=make_prompt(text,mapping,profile,adapter,context=block.get('context'))
     # Specialist templates receive only their documented translation contract.
     for attempt in range(1 if adapter=='translategemma' else 2):
         prompt=base

@@ -7,8 +7,9 @@ import pymupdf as fitz
 
 from .backend import Cancelled
 from .storage import sha256
+from .ocr_assets import data_directory, SHA256 as ENGLISH_SHA256
 
-VERSION = 'rapidocr-1.4.4-ppocr4-cpu-1'
+VERSION = 'english-lstm-best-rapid-fallback-2'
 MODES = {'auto', 'off', 'force'}
 MODEL_HASHES = {
     'ch_PP-OCRv4_det_infer.onnx': 'd2a7720d45a54257208b1e13e36a8479894cb74155a5efe29462512d42f49da9',
@@ -23,12 +24,20 @@ MAX_SIDE = 3500
 def signature(mode):
     if mode not in MODES:
         raise ValueError('지원하지 않는 OCR 모드입니다.')
-    return dict(mode=mode, version=VERSION, models=MODEL_HASHES, dpi=220,
+    return dict(mode=mode, version=VERSION, models=MODEL_HASHES,
+                english_lstm=ENGLISH_SHA256 if data_directory() else None,dpi=220,
                 max_pixels=MAX_PIXELS, max_side=MAX_SIDE, low_confidence=LOW_CONFIDENCE)
 
 
 class LocalOCR:
     def __init__(self):
+        self.english=data_directory();self.engine=None
+        if self.english:
+            if sha256(self.english/'eng.traineddata')!=ENGLISH_SHA256:
+                raise RuntimeError('영어 OCR 데이터 검증 실패: 다시 설치하세요.')
+
+    def _rapid(self):
+        if self.engine is not None:return self.engine
         import cv2
         import onnxruntime
         import rapidocr_onnxruntime
@@ -46,9 +55,27 @@ class LocalOCR:
                                det_use_dml=False, cls_use_dml=False, rec_use_dml=False,
                                max_side_len=MAX_SIDE, det_limit_side_len=1536,
                                det_limit_type='max', text_score=0.)
+        return self.engine
 
     def __call__(self, pixels):
-        result, _ = self.engine(pixels)
+        if self.english:
+            height,width=pixels.shape[:2]
+            pix=fitz.Pixmap(fitz.csRGB,width,height,pixels[:,:,::-1].copy().tobytes(),False)
+            pix.set_dpi(220,220)
+            data=pix.pdfocr_tobytes(language='eng',tessdata=str(self.english))
+            rows=[]
+            with fitz.open('pdf',data) as document:
+                page=document[0];groups={}
+                for word in page.get_text('words'):
+                    groups.setdefault((word[5],word[6]),[]).append(word)
+                for words in groups.values():
+                    words.sort(key=lambda w:w[7])
+                    text=' '.join(w[4] for w in words)
+                    x0=min(w[0] for w in words)*220/72;y0=min(w[1] for w in words)*220/72
+                    x1=max(w[2] for w in words)*220/72;y1=max(w[3] for w in words)*220/72
+                    rows.append([[[x0,y0],[x1,y0],[x1,y1],[x0,y1]],text,None])
+            if any(re.search(r'\b[A-Za-z]{3,}\b',r[1]) for r in rows):return rows
+        result, _ = self._rapid()(pixels)
         return result or []
 
 
@@ -78,7 +105,7 @@ def page_blocks(page, mode='auto', engine=None, cancel=lambda: False):
     has_image = any((r & page.rect).get_area() >= area * .005 and min(r.width, r.height) >= 20 for r in images)
     needed = mode == 'force' or (mode == 'auto' and (has_image or chars < 20))
     info = dict(mode=mode, attempted=needed, engine=VERSION if needed else None,
-                lines=0, low_confidence_lines=0, duplicate_lines=0)
+                lines=0, low_confidence_lines=0, unscored_lines=0,duplicate_lines=0)
     warnings = []
     if not needed:
         if chars < 20:
@@ -111,17 +138,26 @@ def page_blocks(page, mode='auto', engine=None, cancel=lambda: False):
         if mode != 'force' and (same_text or coverage>=.9):
             info['duplicate_lines'] += 1
             continue
-        confidence = float(confidence)
+        confidence = float(confidence) if confidence is not None else None
         size = max(6., min(14., (bbox[3]-bbox[1])*.8))
         span = dict(text=text.strip(), bbox=bbox, size=size, flags=0, font='OCR',
                     extraction='ocr', ocr_confidence=confidence)
         retained.append(dict(type=0, bbox=bbox, lines=[dict(bbox=bbox, spans=[span])]))
         info['lines'] += 1
-        info['low_confidence_lines'] += confidence < LOW_CONFIDENCE
+        info['low_confidence_lines'] += confidence is not None and confidence < LOW_CONFIDENCE
+        info['unscored_lines'] += confidence is None
     if info['lines']:
         warnings.append(f'로컬 OCR {info["lines"]}줄: 인식 오류가 번역에 반영될 수 있으므로 원문을 대조하세요.')
     if info['low_confidence_lines']:
         warnings.append(f'OCR 낮은 신뢰도 {info["low_confidence_lines"]}줄: 숫자·이름·수식을 특히 확인하세요.')
+    if info['unscored_lines']:
+        warnings.append('영어 LSTM OCR은 인식 확률을 제공하지 않습니다. 점수 없음은 정확하다는 뜻이 아닙니다.')
+    detected=' '.join(row[1] for row in rows)
+    letters=sum(c.isalpha() for c in detected)
+    word_letters=sum(len(word) for word in re.findall(r'\b[A-Za-z]{3,}\b',detected))
+    if len(rows)>=15 and letters and word_letters/letters<.55:
+        info['fragmented_text']=True
+        warnings.append('OCR이 짧은 문자 조각으로 분절됐습니다. 회전 도식·표·잡음의 글자는 누락되거나 순서가 바뀔 수 있어 원본 확인이 필요합니다.')
     if not rows and (chars < 20 or mode == 'force'):
         warnings.append('OCR에서 글자를 찾지 못했습니다. 빈 쪽·도형·흐린 스캔인지 원문을 확인하세요.')
     info['raster_size'] = [pix.width, pix.height]
