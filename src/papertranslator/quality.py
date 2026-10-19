@@ -4,7 +4,7 @@ import re
 import secrets
 from .quantities import equivalent_durations
 
-VERSION = 'quality-9'
+VERSION = 'quality-10'
 PROMPT_VERSION = 'contextual-paragraph-7'
 PROTECTED = re.compile(r'https?://[^\s<>]+|10\.\d{4,9}/[^\s<>]+|`[^`]+`|\bO\([^\n)]{1,60}\)|\[[\d,; -]+\]|\b[A-Z][a-z]+ et al\.(?:,? \d{4})?')
 NUMBER = re.compile(r'(?<![A-Za-z0-9_])[-−+]?\d+(?:[.,]\d+)*(?:\s?%|[eE][-+]?\d+)?')
@@ -33,7 +33,7 @@ def allowed_written_numbers(source):
         allowed[str(roman[match[1]])]+=1
     months=['January','February','March','April','May','June','July','August','September','October','November','December']
     for number,name in enumerate(months,1):
-        allowed[str(number)]+=len(re.findall(r'\b'+name+r'\s+\d{1,2}\b',source,re.I))
+        allowed[str(number)]+=len(re.findall(r'\b'+name+r'\s+(?:\d{1,2}|\d{4})\b',source,re.I))
     if re.search(r'\bprimary\s+(?:historical\s+)?source\b',source,re.I):allowed['1']+=1
     return allowed
 
@@ -170,7 +170,7 @@ def check(source, target):
         errors.append(dict(code='numbers', severity='major', message='숫자·부호·개수를 원문과 대조하세요.', missing=list(missing.elements()), added=list(added.elements())))
     if re.search(r'\bp\s*[=<>≤≥]', source, re.I) and '유의수준' in target:
         errors.append(dict(code='p_vs_alpha', severity='critical', message='p값을 유의수준으로 바꿨을 가능성'))
-    if 'random' not in source.lower() and not re.search(r'\bRCTs?\b',source) and re.search('무작위|랜덤', target):
+    if 'random' not in source.lower() and not re.search(r'\bRCTs?\b',source,re.I) and re.search('무작위|랜덤', target):
         errors.append(dict(code='added_random', severity='critical', message='원문에 없는 무작위 배정 가능성'))
     if re.search(r'\beconomic\s+(?:uncertainty\s+and\s+)?depression\b',source,re.I) and '우울증' in target:
         errors.append(dict(code='economic_depression',severity='major',message='경제 맥락의 depression을 임상적 우울증으로 옮겼을 가능성'))

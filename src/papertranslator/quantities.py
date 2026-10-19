@@ -8,9 +8,9 @@ WORDS=dict(zero=0,one=1,two=2,three=3,four=4,five=5,six=6,seven=7,eight=8,nine=9
 KOREAN=dict(한=1,두=2,세=3,네=4,다섯=5,여섯=6,일곱=7,여덟=8,아홉=9,열=10,스무=20)
 WORD='(?:'+'|'.join(sorted(WORDS,key=len,reverse=True))+')'
 NUMBER=r'[-+−]?(?:\d+[- ]\d+/\d+|\d+½|\d+/\d+|\d+(?:\.\d+)?)'
-VALUE=r'(?:'+NUMBER+'|'+WORD+r'\s+and\s+a\s+half|'+WORD+r'(?:[- ]'+WORD+r')?)'
+VALUE=r'(?:(?:'+NUMBER+'|'+WORD+r')\s+(?:thousand|million|billion)|'+NUMBER+'|'+WORD+r'\s+and\s+a\s+half|'+WORD+r'(?:[- ]'+WORD+r')?)'
 EN=re.compile(r'(?<![\w])('+VALUE+r')[-\s]+(decades?|years?|months?|weeks?|days?|hours?|minutes?|seconds?)\b',re.I)
-KO=re.compile(r'(?<![A-Za-z0-9_])('+NUMBER+'|'+'|'.join(sorted(KOREAN,key=len,reverse=True))+r')\s*(개월|시간|년|세(?!기)|해|달|주|일|분|초)(\s*반)?')
+KO=re.compile(r'(?<![A-Za-z0-9_])((?:'+NUMBER+'|'+'|'.join(sorted(KOREAN,key=len,reverse=True))+r')(?:\s*[만억조])?)\s*(개월|시간|년|세(?!기)|해|달|주|일|분|초)(\s*반)?')
 FACTORS={'decade':('months',120),'year':('months',12),'month':('months',1),
          'week':('days',7),'day':('days',1),'hour':('seconds',3600),'minute':('seconds',60),'second':('seconds',1),
          '년':('months',12),'해':('months',12),'세':('months',12),'개월':('months',1),'달':('months',1),
@@ -19,6 +19,8 @@ FACTORS={'decade':('months',120),'year':('months',12),'month':('months',1),
 
 def value(text):
     text=text.lower().replace('−','-')
+    large=re.fullmatch(r'(.+?)\s*(thousand|million|billion|만|억|조)',text)
+    if large:return value(large[1])*dict(thousand=1000,million=1000000,billion=1000000000,만=10000,억=100000000,조=1000000000000)[large[2]]
     if text in KOREAN:return Fraction(KOREAN[text])
     mixed=re.fullmatch(r'([-+]?\d+)[- ](\d+/\d+)',text)
     if mixed:return Fraction(mixed[1])+(-1 if mixed[1].startswith('-') else 1)*Fraction(mixed[2])
@@ -45,6 +47,11 @@ def groups(text,pattern):
 
 def equivalent_durations(source,target):
     """Mask only paired equal quantities, leaving all other numbers for strict checks."""
+    # Narrative "One day, ..." is not a measured 24-hour duration. Permit the
+    # exact Korean idiom only at a sentence boundary; keep "took one day" strict.
+    if re.search(r'어느\s*날',target):
+        source=re.sub(r'(^|[.!?]\s+)(one day)(?=,\s+(?:after|when|while|I|we|he|she|they|there)\b)',
+                      lambda m:m[1]+' '*len(m[2]),source,flags=re.I)
     originals=groups(source,EN);targets=groups(target,KO);used=set();a=[];b=[];unmatched=[]
     for original in originals:
         match=next((i for i,t in enumerate(targets) if i not in used and t['family']==original['family'] and t['value']==original['value']),None)

@@ -16,6 +16,10 @@ from papertranslator.translation import blocking
     ('75 per cent agreed.','75퍼센트가 동의했다.'),
     ('The twentieth century.','20세기.'),
     ('A report until1952 describes RCTs.','1952년까지의 보고서는 무작위 대조시험을 설명한다.'),
+    ('Meta-analyses of RCTS.','무작위 대조시험의 메타분석.'),
+    ('June 2006','2006년 6월'),
+    ('After 100 million years, it returned.','1억 년 후 돌아왔다.'),
+    ('One day, after reading, I left.','어느 날, 독서 후 나는 떠났다.'),
 ])
 def test_legitimate_academic_notation(source,target):
     assert not blocking(check(source,target))
@@ -26,6 +30,10 @@ def test_actual_value_and_economic_context_errors_still_block():
     assert blocking(check('The report describes economic depression.','보고서는 경제적 우울증을 설명한다.'))
     assert not blocking(check('The patient has depression.','환자는 우울증이 있다.'))
     assert blocking(check('A case series was reported.','무작위 대조시험이 보고되었다.'))
+    assert blocking(check('After 100 million years, it returned.','5천만 년 후 돌아왔다.'))
+    assert blocking(check('It took one day, after the meeting.','회의 후 어느 날이 걸렸다.'))
+    assert blocking(check('One day, not two days, was sufficient.','어느 날이면 충분했다.'))
+    assert blocking(check('OCR speck.', '주변 문맥을 반복해서 임의로 추가한 내용입니다. '*20))
 
 
 def test_known_layout_hyphens_only():
@@ -108,6 +116,16 @@ def test_contents_references_entry_does_not_preserve_the_rest_of_the_book(tmp_pa
     ir=analyze(source,[0,1,2],ocr_mode='off')
     assert not next(b for b in ir['blocks'] if b['source'].startswith('This biography'))['preserve']
     assert all(b['preserve'] for b in ir['blocks'] if b['source'].startswith('Author,'))
+
+
+def test_reference_word_in_a_body_heading_does_not_hide_body(tmp_path):
+    source=tmp_path/'body.pdf'
+    with fitz.open() as document:
+        page=document.new_page();page.insert_text((40,60),'References to previous studies')
+        page.insert_text((40,100),'Author (2001), Author (2002), Author (2003) reported different results.')
+        document.save(source)
+    ir=analyze(source,[0],ocr_mode='off')
+    assert all(not b['preserve'] for b in ir['blocks'])
 
 
 def revision(**kwargs):
