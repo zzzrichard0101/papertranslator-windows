@@ -101,12 +101,15 @@ def test_tall_ocr_header_is_excluded_from_continuing_body(tmp_path):
             return [[[50*scale,y*scale],[550*scale,y*scale],[550*scale,(y+height)*scale],[50*scale,(y+height)*scale]],text,None]
         header=line('Synthetic Treatment Studies',30,24)
         if len(calls)==1:return [header,line('The children used themes and',700,14)]
-        if len(calls)==2:return [header,line('games to express their feelings.',95,14)]
+        if len(calls)==2:
+            fragment=[[[200*scale,38*scale],[280*scale,38*scale],[280*scale,54*scale],[200*scale,54*scale]],'en betw',None]
+            return [header,line('2',35,10),fragment,line('games to express their feelings.',95,14)]
         return [header,line('Another paragraph ends here.',95,14)]
     ir=analyze(source,[0,1,2],ocr_mode='force',ocr_engine=recognize)
-    assert sum(b['kind']=='running_header' for b in ir['blocks'])==3
+    assert sum(b['kind']=='running_header' for b in ir['blocks'])==3,[(b['source'],b['kind']) for b in ir['blocks']]
     joined=next(b for b in ir['blocks'] if len(b['source_page_indices'])>1)
     assert joined['source']=='The children used themes and games to express their feelings.'
+    assert next(b for b in ir['blocks'] if b['source']=='en betw')['preserve']
 
 
 def test_ocr_cache_reuses_same_raster_and_engine_signature(tmp_path):

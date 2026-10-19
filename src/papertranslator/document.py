@@ -12,7 +12,7 @@ from .storage import atomic_json, safe_title, sha256, read_json
 import hashlib
 from .ocr import LocalOCR, page_blocks, signature
 
-PARSER = 'pymupdf-logical-paragraph-ir-10-running-header-height'
+PARSER = 'pymupdf-logical-paragraph-ir-11-overlapping-header-fragments'
 JOIN_WORDS=set('economic psychological paradigm practitioner practitioners particular individual individuals '
               'support supporting delivered delivery theories theory research professional professionals '
               'clinical objective subjective experience experiences observation observations systematic '
@@ -239,6 +239,14 @@ def analyze(source, selected, progress=lambda *_: None, ocr_mode='auto', cancel=
                         unit['bbox'][3]-unit['bbox'][1]<20 and
                         all(s.get('extraction')=='ocr' for s in unit['style_runs'])):
                         unit.update(kind='page_marker',preserve=True,preserve_reason='ocr_above_running_header')
+                headers=[u for u in units if u['kind']=='running_header']
+                for unit in units:
+                    box=unit['bbox']
+                    if (unit['kind'] not in metadata and len(unit['source'])<40 and box[3]-box[1]<20 and
+                        all(s.get('extraction')=='ocr' for s in unit['style_runs']) and
+                        any(box[1]<h['bbox'][3] and box[3]<=h['bbox'][3]+12 and
+                            box[0]>=h['bbox'][0] and box[2]<=h['bbox'][2] for h in headers)):
+                        unit.update(kind='page_marker',preserve=True,preserve_reason='ocr_overlapping_running_header')
             body=[u for u in units if u['kind'] not in metadata]
             prior=next((u for u in reversed(blocks) if u['kind'] not in metadata),None)
             if page_number and prior and body and continuation(prior,body[0],pages[page_number-1],page_info):
