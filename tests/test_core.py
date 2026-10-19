@@ -98,6 +98,31 @@ def test_ir_and_export_preserve_selected_originals(tmp_path):
     assert len(PdfReader(tmp_path/'export'/'Bilingual.pdf').pages)==2
 
 
+@pytest.mark.parametrize('rotation',[0,90,180,270])
+@pytest.mark.parametrize('cropped',[False,True])
+def test_bilingual_original_face_keeps_rotation_and_crop(tmp_path,rotation,cropped):
+    source=tmp_path/'rotated.pdf'
+    with fitz.open() as doc:
+        p=doc.new_page(width=600,height=400)
+        p.draw_rect(fitz.Rect(50,45,250,100),fill=(1,0,0),color=None)
+        p.draw_rect(fitz.Rect(430,250,540,330),fill=(0,0,1),color=None)
+        p.insert_text((70,150),'Asymmetric original face.',fontsize=18)
+        if cropped:p.set_cropbox(fitz.Rect(25,20,570,370))
+        p.set_rotation(rotation);doc.save(source)
+    before=sha256(source);ir=analyze(source,[0],ocr_mode='off')
+    records={b['id']:{**b,'target':'원본 표시 검사. '+'가나다라 '*1500,'status':'translated','issues':[]} for b in ir['blocks']}
+    job=dict(source_sha256=before,source_name=source.name,created_at='synthetic',total_pages=1,model={'id':'synthetic'},profile='general')
+    out=tmp_path/'output';export(ir,records,source,out,'회전 표시 검사',job)
+    with fitz.open(source) as original,fitz.open(out/'Bilingual.pdf') as dual:
+        rect=original[0].rect
+        a=original[0].get_pixmap();assert len(dual)>1
+        for page in dual:
+            b=page.get_pixmap(clip=rect)
+            assert (a.width,a.height)==(b.width,b.height)
+            assert a.samples==b.samples
+    assert sha256(source)==sha256(out/'Original.pdf')==before
+
+
 def test_pdf_wrap_does_not_split_decimals_or_code(tmp_path):
     from papertranslator.document import flow_pdf
     text=('측정값은 1.25이고 p = 0.032이며 `pending_count`를 유지한다. '*40)

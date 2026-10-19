@@ -374,17 +374,23 @@ def export(ir, records, original, folder, title, job, cancel=lambda: False):
             raise RuntimeError('원본 복사본 검증 실패')
         mapping = flow_pdf(ir, records, folder/'Korean.pdf', title)
         with fitz.open(original) as src, fitz.open(folder/'Korean.pdf') as ko, fitz.open() as dual:
+            faces={i:(fitz.Rect(src[i].rect),src[i].rotation) for i in set(mapping)}
             for n, source_index in enumerate(mapping):
                 if cancel():
                     from .backend import Cancelled
                     raise Cancelled()
                 a=src[source_index]; b=ko[n]
-                height=max(a.rect.height,b.rect.height)
-                out=dual.new_page(width=a.rect.width+b.rect.width,height=height)
+                face,rotation=faces[source_index]
+                # Use unrotated source coordinates and explicitly apply its
+                # display rotation when placing the original crop. This affects
+                # only the in-memory document, never the source/copied PDF bytes.
+                a.set_rotation(0)
+                height=max(face.height,b.rect.height)
+                out=dual.new_page(width=face.width+b.rect.width,height=height)
                 # Preserve original vectors and images on the left, with no edits.
                 if a.get_contents():
-                    out.show_pdf_page(fitz.Rect(0,0,a.rect.width,a.rect.height), src, source_index)
-                out.show_pdf_page(fitz.Rect(a.rect.width,0,a.rect.width+b.rect.width,b.rect.height),ko,n)
+                    out.show_pdf_page(fitz.Rect(0,0,face.width,face.height),src,source_index,rotate=-rotation)
+                out.show_pdf_page(fitz.Rect(face.width,0,face.width+b.rect.width,b.rect.height),ko,n)
             dual.save(folder/'Bilingual.pdf', garbage=4, deflate=True)
         failed=[r for r in records.values() if r['status']=='failed']
         warnings=[r for r in records.values() if r.get('issues') or r.get('review',{}).get('verdict') in {'review','fail','uncertain'}]
