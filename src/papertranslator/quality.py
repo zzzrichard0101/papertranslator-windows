@@ -4,7 +4,7 @@ import re
 import secrets
 from .quantities import equivalent_durations
 
-VERSION = 'quality-11'
+VERSION = 'quality-12'
 PROMPT_VERSION = 'contextual-paragraph-8'
 PROTECTED = re.compile(r'https?://[^\s<>]+|10\.\d{4,9}/[^\s<>]+|`[^`]+`|\bO\([^\n)]{1,60}\)|\[[\d,; -]+\]|\b[A-Z][a-z]+ et al\.(?:,? \d{4})?')
 NUMBER = re.compile(r'(?<![A-Za-z0-9_])[-−+]?\d+(?:[.,]\d+)*(?:\s?%|[eE][-+]?\d+)?')
@@ -34,7 +34,6 @@ def allowed_written_numbers(source):
     months=['January','February','March','April','May','June','July','August','September','October','November','December']
     for number,name in enumerate(months,1):
         allowed[str(number)]+=len(re.findall(r'\b'+name+r'\s+(?:\d{1,2}|\d{4})\b',source,re.I))
-    if re.search(r'\bprimary\s+(?:historical\s+)?source\b',source,re.I):allowed['1']+=1
     return allowed
 
 
@@ -168,6 +167,16 @@ def check(source, target):
             return '('+re.sub(r'([,;])\s*',r'\1 ',match[1])+')'
         return re.sub(r'\(\s*('+year_list+r')\s*\)',replace,text)
     numeric_source,numeric_target,unmatched=equivalent_durations(citation_spacing(normalize_percent(source)),citation_spacing(normalize_percent(target)))
+    # Lexical levels/modes are not added participant counts. Mask only the
+    # corresponding Korean expression, bounded by its explicit source mentions.
+    lexical=[(r'\bprimary\b',r'(?<!\d)1\s*차'),(r'\bsecondary\b',r'(?<!\d)2\s*차'),
+             (r'\bfirsthand\b',r'(?<!\d)1\s*차'),
+             (r'\bindividually\b|\bindividual\s+(?:interviews?|interviewing|sessions?|therapy|treatment|work)\b',r'(?<!\d)1\s*대\s*1(?!\d)'),
+             (r'\byear[- ]long\b',r'(?<!\d)1\s*년'),
+             (r'\bweekly\b',r'주\s*1\s*회')]
+    for source_pattern,target_pattern in lexical:
+        count=len(re.findall(source_pattern,numeric_source,re.I))
+        if count:numeric_target=re.sub(target_pattern,lambda m:re.sub(r'\d',' ',m[0]),numeric_target,count=count)
     a = Counter(normalize(x) for x in NUMBER.findall(numeric_source))
     b = Counter(normalize(x) for x in NUMBER.findall(numeric_target))
     # Missing original decimal/sign/count is always an error. Only genuine extra

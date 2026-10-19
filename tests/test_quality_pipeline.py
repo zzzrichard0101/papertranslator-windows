@@ -21,6 +21,11 @@ from papertranslator.translation import blocking
     ('After 100 million years, it returned.','1억 년 후 돌아왔다.'),
     ('One day, after reading, I left.','어느 날, 독서 후 나는 떠났다.'),
     ('Wood (1991,1995) reported these findings.','Wood(1991, 1995)는 이 결과를 보고했다.'),
+    ('Primary research and secondary evidence inform practice.','1차 연구와 2차 근거는 실천에 정보를 제공한다.'),
+    ('The interviews were conducted individually.','면담은 1대1로 진행되었다.'),
+    ('The project used a year-long intervention.','이 프로젝트는 1년간의 중재를 사용했다.'),
+    ('The control group attended weekly sessions.','대조군은 주 1회 세션에 참여했다.'),
+    ('Firsthand sources were used.','1차 자료가 사용되었다.'),
 ])
 def test_legitimate_academic_notation(source,target):
     assert not blocking(check(source,target))
@@ -37,6 +42,12 @@ def test_actual_value_and_economic_context_errors_still_block():
     assert blocking(check('OCR speck.', '주변 문맥을 반복해서 임의로 추가한 내용입니다. '*20))
     assert blocking(check('Wood (1991,1995) reported these findings.','Wood(1991, 1996)는 이 결과를 보고했다.'))
     assert blocking(check('The value was 1991,1995.','값은 1991, 1995였다.'))
+    assert blocking(check('Primary research informs practice.','3차 연구가 실천에 정보를 제공한다.'))
+    assert blocking(check('Primary research informs practice.','연구자 1명이 실천에 정보를 제공한다.'))
+    assert blocking(check('The study measured individual differences.','연구는 1대1 차이를 측정했다.'))
+    assert blocking(check('The control group attended weekly sessions.','대조군은 주 2회 세션에 참여했다.'))
+    assert blocking(check('The project used a year-long intervention.','이 프로젝트는 2년간의 중재를 사용했다.'))
+    assert blocking(check('Primary research was published in 1995.','1차 연구가 발표되었다.'))
 
 
 def test_known_layout_hyphens_only():
