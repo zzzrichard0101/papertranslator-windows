@@ -240,7 +240,7 @@ wheels = [
 
 [[package]]
 name = "papertranslator-windows"
-version = "0.5.2a1"
+version = "0.5.3a1"
 source = { editable = "." }
 dependencies = [
     { name = "httpx" },

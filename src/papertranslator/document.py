@@ -152,7 +152,7 @@ def segments(text, limit=1800):
     return result
 
 
-def analyze(source, selected, progress=lambda *_: None, ocr_mode='auto', cancel=lambda: False, ocr_engine=None,cache_dir=None):
+def analyze(source, selected, progress=lambda *_: None, ocr_mode='auto', cancel=lambda: False, ocr_engine=None,cache_dir=None,recovery=False):
     doc = fitz.open(source); pages = []; blocks = []; extracted=[]
     engine=ocr_engine
     def recognize(pixels):
@@ -160,7 +160,7 @@ def analyze(source, selected, progress=lambda *_: None, ocr_mode='auto', cancel=
         cached=None
         if cache_dir:
             cache=Path(cache_dir);cache.mkdir(parents=True,exist_ok=True)
-            key=hashlib.sha256(json.dumps(signature(ocr_mode),sort_keys=True).encode()+pixels.tobytes()).hexdigest()
+            key=hashlib.sha256(json.dumps(signature(ocr_mode,recovery),sort_keys=True).encode()+pixels.tobytes()).hexdigest()
             cached=cache/(key+'.json');saved=read_json(cached,{})
             if saved.get('key')==key and isinstance(saved.get('rows'),list):return saved['rows']
         if engine is None:engine=LocalOCR()
@@ -175,7 +175,7 @@ def analyze(source, selected, progress=lambda *_: None, ocr_mode='auto', cancel=
             page_info = dict(source_page_index=index, mediabox=list(page.mediabox), cropbox=list(page.cropbox),
                              rotation=page.rotation, width=page.rect.width, height=page.rect.height,
                              warnings=[], block_ids=[], continuations=[])
-            text_blocks, extraction, warnings=page_blocks(page,ocr_mode,recognize,cancel)
+            text_blocks, extraction, warnings=page_blocks(page,ocr_mode,recognize,cancel,recovery=recovery)
             page_info['ocr']=extraction;page_info['warnings'].extend(warnings)
             if extraction['lines']:
                 # An image can sit between lines in one native PDF text block.
@@ -199,9 +199,16 @@ def analyze(source, selected, progress=lambda *_: None, ocr_mode='auto', cancel=
                 if any(abs(line['bbox'][1]-top)<3 for top in caption_rows) or re.match(r'^\s*Source\s*:', ''.join(s['text'] for s in line['spans']),re.I):
                     line['layout_kind']='caption'
             page_info['structured_above_body']=bool(regions or any(l.get('diagram_label') or l.get('rotation') for l in lines))
+            if recovery:
+                from .ocr_recovery import join_fragments
+                body_blocks=join_fragments(body_blocks)
+                page_info['ocr']['reconstructed_fragments']=sum(
+                    max(0,l.get('reconstructed_fragments',1)-1) for b in body_blocks for l in b.get('lines',[]))
             units=paragraph_units(page,body_blocks)
             for cell in table_cells:
-                cell_units=paragraph_units(page,[dict(type=0,lines=cell['lines'],bbox=cell['bbox'])])
+                cell_blocks=[dict(type=0,lines=cell['lines'],bbox=cell['bbox'])]
+                if recovery:cell_blocks=join_fragments(cell_blocks)
+                cell_units=paragraph_units(page,cell_blocks)
                 # A cell remains one translation unit; boundaries never cross a grid.
                 for unit in cell_units:
                     unit.update(kind='table_cell',table_index=cell['table'],cell_index=cell['cell'],cell_bbox=cell['bbox'])
@@ -324,7 +331,7 @@ def analyze(source, selected, progress=lambda *_: None, ocr_mode='auto', cancel=
                             ocr_confidence_min=min(scores) if scores else None)
                 logical.append(item);by_page[indices[0]]['block_ids'].append(bid)
                 for index in indices[1:]:by_page[index]['continuations'].append(dict(id=bid,source_page_index=indices[0],source_page_indices=indices))
-        return dict(parser=PARSER, ocr=signature(ocr_mode), pages=pages, blocks=logical,
+        return dict(parser=PARSER, ocr=signature(ocr_mode,recovery), pages=pages, blocks=logical,
                     limitations=['빈 줄·제목·글머리표로 문단을 나누고 연속 선택한 쪽의 미완성 본문을 연결합니다. 복잡한 2단·표는 검토가 필요합니다.',
                                  '한국어 PDF는 읽기형 재배치이며, 위치 대응 대조본은 원문 영역을 따릅니다. 번역이 길면 보충면으로 이어지고 복잡한 조판은 검토가 필요합니다.',
                                  'OCR은 영어 인쇄체 중심입니다. 손글씨·수식·흐린 스캔·복잡한 표의 인식 및 읽기 순서는 보장하지 않습니다. 기계 의미 검수는 coverage를 확인하세요.'])
@@ -427,6 +434,7 @@ def export(ir, records, original, folder, title, job, cancel=lambda: False):
         shutil.copyfile(original, folder/'Original.pdf')
         if sha256(folder/'Original.pdf') != job['source_sha256']:
             raise RuntimeError('원본 복사본 검증 실패')
+        if ir.get('terminology'):atomic_json(folder/'Terminology.json',ir['terminology'])
         mapping = flow_pdf(ir, records, folder/'Korean.pdf', title)
         layout=None;dual_mapping=mapping
         if job.get('bilingual_layout','reflow')=='source_position':
@@ -460,6 +468,10 @@ def export(ir, records, original, folder, title, job, cancel=lambda: False):
         coverage=len(reviewed)/len(translated) if translated else 0
         review_status='not_performed' if not reviewed else ('all_machine_reviewed' if len(reviewed)==len(translated) else 'partially_machine_reviewed')
         quality=dict(schema=6, ocr=ir.get('ocr'), ocr_pages=sum(p.get('ocr',{}).get('lines',0)>0 for p in ir['pages']),
+                     ocr_recovery=dict(attempted_regions=sum(p.get('ocr',{}).get('recovery',{}).get('attempted_regions',0) for p in ir['pages']),
+                         added_lines=sum(p.get('ocr',{}).get('recovery',{}).get('added_lines',0) for p in ir['pages']),
+                         reconstructed_fragments=sum(p.get('ocr',{}).get('reconstructed_fragments',0) for p in ir['pages'])),
+                     terminology_version=ir.get('terminology',{}).get('version'),
                      ocr_unscored_lines=sum(p.get('ocr',{}).get('unscored_lines',0) for p in ir['pages']),
                      ocr_low_confidence_lines=sum(p.get('ocr',{}).get('low_confidence_lines',0) for p in ir['pages']),
                      needs_review=True, file_generation='completed', semantic_review=review_status,

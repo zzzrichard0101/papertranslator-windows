@@ -21,12 +21,16 @@ MAX_PIXELS = 12_000_000
 MAX_SIDE = 3500
 
 
-def signature(mode):
+def signature(mode, recovery=False):
     if mode not in MODES:
         raise ValueError('지원하지 않는 OCR 모드입니다.')
-    return dict(mode=mode, version=VERSION, models=MODEL_HASHES,
+    result = dict(mode=mode, version=VERSION, models=MODEL_HASHES,
                 english_lstm=ENGLISH_SHA256 if data_directory() else None,dpi=220,
                 max_pixels=MAX_PIXELS, max_side=MAX_SIDE, low_confidence=LOW_CONFIDENCE)
+    if recovery:
+        from .ocr_recovery import VERSION as RECOVERY_VERSION
+        result['recovery'] = RECOVERY_VERSION
+    return result
 
 
 class LocalOCR:
@@ -116,7 +120,7 @@ def overlap(a, b):
     return (a & b).get_area() / area if area else 0.
 
 
-def page_blocks(page, mode='auto', engine=None, cancel=lambda: False):
+def page_blocks(page, mode='auto', engine=None, cancel=lambda: False, recovery=False):
     """Return ordinary text blocks plus OCR lines in displayed page coordinates."""
     signature(mode)
     if cancel():
@@ -156,6 +160,9 @@ def page_blocks(page, mode='auto', engine=None, cancel=lambda: False):
     rows = recognize(pixels)
     if cancel():
         raise Cancelled()
+    if recovery:
+        from .ocr_recovery import recover
+        rows, info['recovery'] = recover(pixels, rows, recognize, cancel)
     retained = [] if mode == 'force' else native
     native_spans = [s for b in native for l in b.get('lines', []) for s in l['spans'] if s['text'].strip()]
     previous_top=None;previous_height=0
@@ -191,6 +198,8 @@ def page_blocks(page, mode='auto', engine=None, cancel=lambda: False):
         size = max(6., min(14., (bbox[3]-bbox[1])*.8))
         span = dict(text=text.strip(), bbox=bbox, size=size, flags=0, font='OCR',
                     extraction='ocr', ocr_confidence=confidence,rotation=rotation,diagram_label=diagram_label,region_bbox=region_bbox,erase_patch=erase_patch)
+        if meta.get('recovery'):
+            span['ocr_recovery']=dict(version=meta['recovery'],region=meta['recovered_region'])
         retained.append(dict(type=0, bbox=bbox, reading_top=reading_top,
                              lines=[dict(bbox=bbox, spans=[span],reading_top=reading_top,rotation=rotation,diagram_label=diagram_label,layout_kind=layout_kind,region_bbox=region_bbox,erase_patch=erase_patch,
                                          layout_words=[dict(text=w['text'],bbox=[v/scale for v in w['bbox']])

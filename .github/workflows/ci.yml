@@ -20,6 +20,7 @@ jobs:
       - run: uv run python scripts/quality_integration.py
       - run: uv run python scripts/layout_integration.py
       - run: uv run python scripts/performance_integration.py
+      - run: uv run python scripts/ocr_recovery_integration.py
       - run: uv run python scripts/audit_public.py
       - if: github.event_name == 'workflow_dispatch'
         shell: pwsh

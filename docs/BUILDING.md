@@ -69,6 +69,10 @@ OCR 모델과 config.yaml은 PyInstaller의 collect-data로 포함합니다. 빌
 
 ## CI
 
+`ocr_recovery_integration.py`는 합성 스캔의 한 줄을 전체 쪽 OCR 결과에서 의도적으로 누락시킨 뒤,
+실제 로컬 CPU OCR이 그 영역을 재인식하는지 검사합니다. 번역은 테스트 대역이며, worker·배치·원문 면 픽셀·
+추가 호출 없는 재개와 기존 작업 정책의 분리를 검사합니다. 임의 스캔 정확도나 의미 품질 인증이 아닙니다.
+
 `performance_integration.py`는 동일 합성 PDF의 순차/2문단 동시 처리에서 번역·배치·원문 픽셀 보존,
 동일 입력 캐시와 모델 호출 없는 재개를 CPU 테스트 대역으로 비교합니다. GPU 속도 측정은 아닙니다.
 `performance_engine_integration.py --exe dist/PaperTranslator/PaperTranslator.exe`는 설치된 Hy-MT2를

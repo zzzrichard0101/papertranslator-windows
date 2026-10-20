@@ -69,7 +69,7 @@ class Window(QMainWindow):
         self.page_spec=QLineEdit(); self.page_spec.setPlaceholderText('전체 쪽 · 예: 1-12,15,20-'); form.addRow('번역할 쪽',self.page_spec)
         self.ocr_choice=QComboBox()
         for label,value in [('자동 · 스캔/이미지 속 글자 인식','auto'),('끄기 · PDF 텍스트만 사용','off'),('강제 · 모든 쪽을 이미지로 다시 인식','force')]:self.ocr_choice.addItem(label,value)
-        self.ocr_choice.setToolTip('영어 인쇄체용 로컬 CPU OCR. 강제 모드는 기존 텍스트 대신 OCR 결과를 사용합니다.')
+        self.ocr_choice.setToolTip('영어 인쇄체용 로컬 CPU OCR. 새 작업은 누락 후보 영역만 제한적으로 재인식하고 본문 줄 조각을 복원합니다. 강제 모드는 기존 텍스트 대신 OCR 결과를 사용합니다. 기존 작업 재개는 원래 설정을 유지합니다.')
         form.addRow('OCR',self.ocr_choice)
         self.profile=QComboBox(); self.profile.addItem('일반 학술','general'); self.profile.addItem('미술치료 · 정신분석','art_therapy'); self.profile.addItem('컴퓨터공학','computer_science'); form.addRow('분야·용어',self.profile)
         self.model_choice=QComboBox()
