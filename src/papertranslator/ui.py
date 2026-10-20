@@ -93,10 +93,10 @@ class Window(QMainWindow):
         self.api_btn.setFixedSize(130,36)
         form.addRow('교정 방식',quality_row)
         self.layout_choice=QComboBox()
-        self.layout_choice.addItem('원문 위치 대응 · 표·문단 배치 유지','source_position')
+        self.layout_choice.addItem('자동 열 인식 · 원문 위치 대응 · 표·문단 배치 유지','source_position')
         self.layout_choice.addItem('읽기형 · 번역문 순서대로 배치','reflow')
         self.layout_choice.setCurrentIndex(max(0,self.layout_choice.findData(self.settings.get('bilingual_layout','source_position'))))
-        self.layout_choice.setToolTip('대조본 오른쪽 번역을 원문 영역에 대응시킵니다. 넘치는 내용은 같은 원문의 보충면에 이어 싣고, 쪽 대응을 확정하지 못하면 표시합니다.')
+        self.layout_choice.setToolTip('새 작업은 1단/2단 본문과 전체 폭 제목·캡션을 자동 구분합니다. 확인된 열 경계의 연결 문장은 함께 번역하고 각 영역에 대응시킵니다. 넘치는 내용은 같은 원문의 보충면에 이어 싣습니다. 기존 작업은 원래 분석 설정을 유지합니다.')
         form.addRow('대조본 배치',self.layout_choice)
         self.parallel_choice=QComboBox()
         self.parallel_choice.addItem('안정성 우선 · 1문단씩',1)
@@ -301,6 +301,7 @@ class Window(QMainWindow):
         elif state.get('quality_summary'):
             q=state['quality_summary']; self.result.setText(f'번역 {q["translated"]}문단 · 자동 검사 미통과 {q["failed"]}문단 · 경고 {q["warnings"]}문단 · 별도 의미 검수 {q.get("semantic_review_coverage",0):.0%}')
             if q.get('ocr_pages'):self.result.setText(self.result.text()+f'\nOCR {q["ocr_pages"]}쪽 · 낮은 인식 신뢰도 {q.get("ocr_low_confidence_lines",0)}줄 · 이미지 원문 대조 필요')
+            if q.get('reading_column_pages'):self.result.setText(self.result.text()+f'\n2단 자동 인식 {q["reading_column_pages"]}쪽')
             if q.get('ocr_unscored_lines'):self.result.setText(self.result.text()+f' · 점수 미제공 {q["ocr_unscored_lines"]}줄')
             if q.get('refinement_processed'):self.result.setText(self.result.text()+f'\n다중 모델 교정 {q["refinement_processed"]}문단 · 후보 반영 {q.get("refinement_accepted",0)}문단 · 인간 승인 없음')
             if q.get('output_layout')=='source_position':

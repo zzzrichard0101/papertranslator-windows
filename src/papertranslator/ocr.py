@@ -120,7 +120,7 @@ def overlap(a, b):
     return (a & b).get_area() / area if area else 0.
 
 
-def page_blocks(page, mode='auto', engine=None, cancel=lambda: False, recovery=False):
+def page_blocks(page, mode='auto', engine=None, cancel=lambda: False, recovery=False,prefer_native=False):
     """Return ordinary text blocks plus OCR lines in displayed page coordinates."""
     signature(mode)
     if cancel():
@@ -157,10 +157,25 @@ def page_blocks(page, mode='auto', engine=None, cancel=lambda: False, recovery=F
     if cancel():
         raise Cancelled()
     recognize = engine or LocalOCR()
-    rows = recognize(pixels)
+    # A text-native academic page with small figure images does not need its
+    # complete text layer OCRed again. Mask known rows and inspect bounded gaps.
+    page_image=any(r.width>page.rect.width*.25 and r.height>page.rect.height*.35 for r in images)
+    native_primary=prefer_native and mode=='auto' and chars>=200 and not page_image
+    if native_primary:
+        from .ocr_recovery import recover
+        seeds=[]
+        for block in native:
+            for line in block.get('lines',[]):
+                box=fitz.Rect(line['bbox'])*fitz.Matrix(scale,scale)
+                seeds.append([[[box.x0,box.y0],[box.x1,box.y0],[box.x1,box.y1],[box.x0,box.y1]],
+                    ''.join(s['text'] for s in line['spans']),None,dict(native_seed=True)])
+        recovered,info['recovery']=recover(pixels,seeds,recognize,cancel)
+        rows=[r for r in recovered if len(r)>3 and not r[3].get('native_seed')]
+        info['native_text_primary']=True
+    else:rows = recognize(pixels)
     if cancel():
         raise Cancelled()
-    if recovery:
+    if recovery and not native_primary:
         from .ocr_recovery import recover
         rows, info['recovery'] = recover(pixels, rows, recognize, cancel)
     retained = [] if mode == 'force' else native

@@ -69,7 +69,7 @@ def create_job(source, destination, page_spec='', profile='general', title='',mo
         from .compact_edit import VERSION as COMPACT_VERSION
         state['quality_policy']['editor_output_version']=COMPACT_VERSION
     state['inference_acceleration']=inference_acceleration
-    state['processing_revision']=2
+    state['processing_revision']=3
     if cloud:state['quality_policy']['cloud']={k:cloud[k] for k in ['enabled','model','max_requests']}
     state['ocr_mode']=ocr_mode
     state['bilingual_layout']=bilingual_layout
@@ -127,14 +127,18 @@ def _run(folder, retry_failed):
         save('analyzing','PDF 구조 분석',source_sha256=sha256(original),total_pages=total_pages,selected=selected)
         upgraded=state.get('processing_revision',0)>=1
         structured=state.get('processing_revision',0)>=2
+        academic=state.get('processing_revision',0)>=3
         analysis_identity=dict(source_sha256=state['source_sha256'],selected=selected,
             parser=PARSER,ocr=signature(state.get('ocr_mode','off'),recovery=upgraded))
         if structured:
             from .structure import VERSION as STRUCTURE_VERSION
             analysis_identity['structure']=STRUCTURE_VERSION
+        if academic:
+            from .academic_layout import VERSION as ACADEMIC_VERSION
+            analysis_identity['academic']=ACADEMIC_VERSION
         ir,analysis_hit=get_analysis(folder,analysis_identity,
             lambda:analyze(original,selected,lambda p:save(stage='PDF 분석 · 필요 시 로컬 OCR',current_source_page=p),
-                ocr_mode=state.get('ocr_mode','off'),cancel=cancel,cache_dir=folder/'ocr-cache',recovery=upgraded,structured=structured),cancel)
+                ocr_mode=state.get('ocr_mode','off'),cancel=cancel,cache_dir=folder/'ocr-cache',recovery=upgraded,structured=structured,academic=academic),cancel)
         save(analysis_cache_hit=analysis_hit)
         quality_policy=state.get('quality_policy',{'mode':'legacy'})
         if quality_policy['mode']!='legacy':attach_context(ir,state['title'],state['profile'],document_terms=upgraded)
@@ -155,6 +159,7 @@ def _run(folder, retry_failed):
             if structured:
                 from .sentence_repair import VERSION as REPAIR_VERSION
                 identity['processing'].update(structure=STRUCTURE_VERSION,repair=REPAIR_VERSION)
+            if academic:identity['processing']['academic']=ACADEMIC_VERSION
         stamp=fingerprint(identity)
         journal=Checkpoint(folder,stamp)
         records=journal.load()

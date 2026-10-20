@@ -70,13 +70,15 @@ def paragraph_units(page, text_blocks=None):
         units.append(dict(source=text,raw_source=raw,bbox=bbox,layout_lines=layout_lines,kind=current[0]['kind'],preserve=False,style_runs=spans,rotation=current[0].get('rotation',0),region_bbox=current[0].get('region_bbox'),erase_patch=current[0].get('erase_patch')))
         if current[0].get('flow_order') is not None:
             units[-1]['flow_order']=current[0]['flow_order']
+        if current[0].get('column_bbox'):
+            for key in ('column_index','column_bbox','flow_group'):units[-1][key]=current[0][key]
         current=[]
     for block in (page.get_text('dict',sort=True)['blocks'] if text_blocks is None else text_blocks):
         if block['type']!=0:continue
         spans=[s for line in block['lines'] for s in line['spans']]
         text='\n'.join(''.join(s['text'] for s in line['spans']) for line in block['lines']).strip()
         if not text:continue
-        region=protected_kind(text,spans)
+        region=block.get('academic_preserve') or protected_kind(text,spans)
         marker=bool(re.fullmatch(r'\d{1,4}',text)) and (block['bbox'][1]>page.rect.height*.9 or block['bbox'][3]<page.rect.height*.1)
         if region or marker:
             flush();previous=None
@@ -114,7 +116,7 @@ def paragraph_units(page, text_blocks=None):
                 indented=(width>150 and 4<inset<35 and previous['bbox'][2]-previous['bbox'][0]<width*.95 and
                           bool(re.search(r'[.!?][\"\x27’”)]*\s*$',current[-1]['text'])))
             if current and (line.get('flow_group')!=current[0].get('flow_group') or kind!=current[0]['kind'] or heading or bullet or gap or column_jump or indented or (current[-1]['text'].rstrip().endswith(';') and len(current[-1]['text'])<100 and len(text)<100)):flush()
-            current.append(dict(text=text,bbox=line['bbox'],spans=spans,kind=kind,rotation=rotation,region_bbox=line.get('region_bbox'),erase_patch=line.get('erase_patch'),flow_order=line.get('flow_order'),flow_group=line.get('flow_group')));previous=line
+            current.append(dict(text=text,bbox=line['bbox'],spans=spans,kind=kind,rotation=rotation,region_bbox=line.get('region_bbox'),erase_patch=line.get('erase_patch'),flow_order=line.get('flow_order'),flow_group=line.get('flow_group'),column_index=line.get('column_index'),column_bbox=line.get('column_bbox')));previous=line
             if isolated:flush();previous=None
     flush()
     return units
@@ -155,9 +157,9 @@ def segments(text, limit=1800):
     return result
 
 
-def analyze(source, selected, progress=lambda *_: None, ocr_mode='auto', cancel=lambda: False, ocr_engine=None,cache_dir=None,recovery=False,structured=False):
+def analyze(source, selected, progress=lambda *_: None, ocr_mode='auto', cancel=lambda: False, ocr_engine=None,cache_dir=None,recovery=False,structured=False,academic=False):
     doc = fitz.open(source); pages = []; blocks = []; extracted=[]
-    engine=ocr_engine
+    engine=ocr_engine;column_hint=None;hint_size=None;previous_index=None
     def recognize(pixels):
         nonlocal engine
         cached=None
@@ -178,7 +180,8 @@ def analyze(source, selected, progress=lambda *_: None, ocr_mode='auto', cancel=
             page_info = dict(source_page_index=index, mediabox=list(page.mediabox), cropbox=list(page.cropbox),
                              rotation=page.rotation, width=page.rect.width, height=page.rect.height,
                              warnings=[], block_ids=[], continuations=[])
-            text_blocks, extraction, warnings=page_blocks(page,ocr_mode,recognize,cancel,recovery=recovery)
+            if academic:text_blocks, extraction, warnings=page_blocks(page,ocr_mode,recognize,cancel,recovery=recovery,prefer_native=True)
+            else:text_blocks, extraction, warnings=page_blocks(page,ocr_mode,recognize,cancel,recovery=recovery)
             page_info['ocr']=extraction;page_info['warnings'].extend(warnings)
             if extraction['lines']:
                 # An image can sit between lines in one native PDF text block.
@@ -198,16 +201,33 @@ def analyze(source, selected, progress=lambda *_: None, ocr_mode='auto', cancel=
             lines=[l for b in body_blocks if b.get('type')==0 for l in b.get('lines',[])]
             caption_rows=[l['bbox'][1] for l in lines if re.match(r'^\s*(?:Table|Figure|Box)\s+\d',
                 ''.join(s['text'] for s in l['spans']),re.I)]
-            for line in lines:
-                if any(abs(line['bbox'][1]-top)<3 for top in caption_rows) or re.match(r'^\s*Source\s*:', ''.join(s['text'] for s in line['spans']),re.I):
-                    line['layout_kind']='caption'
+            if academic:
+                for block in body_blocks:
+                    block_lines=block.get('lines',[])
+                    if block_lines and re.match(r'^\s*(?:Table|Figure|Fig\.|Box)\s*\d',
+                        ''.join(s['text'] for s in block_lines[0]['spans']),re.I):
+                        for line in block_lines:line['layout_kind']='caption'
+            else:
+                for line in lines:
+                    if any(abs(line['bbox'][1]-top)<3 for top in caption_rows) or re.match(r'^\s*Source\s*:', ''.join(s['text'] for s in line['spans']),re.I):
+                        line['layout_kind']='caption'
             page_info['structured_above_body']=bool(regions or any(l.get('diagram_label') or l.get('rotation') for l in lines))
             if recovery:
                 from .ocr_recovery import join_fragments
                 body_blocks=join_fragments(body_blocks)
                 page_info['ocr']['reconstructed_fragments']=sum(
                     max(0,l.get('reconstructed_fragments',1)-1) for b in body_blocks for l in b.get('lines',[]))
-            if structured and not regions:
+            column_info=None
+            if academic:
+                from .academic_layout import columns
+                size=(page.rect.width,page.rect.height)
+                hint=column_hint if hint_size==size and previous_index==index-1 else None
+                body_blocks,column_info=columns(page,body_blocks,regions,hint=hint)
+                if column_info:
+                    page_info['reading_columns']=column_info
+                    column_hint=column_info['gutter']/page.rect.width;hint_size=size
+                previous_index=index
+            elif structured and not regions:
                 from .structure import two_columns
                 body_blocks,column_info=two_columns(page,body_blocks)
                 if column_info:page_info['reading_columns']=column_info
@@ -222,9 +242,13 @@ def analyze(source, selected, progress=lambda *_: None, ocr_mode='auto', cancel=
                     region=protected_kind(unit['source'],unit['style_runs'])
                     if region:unit.update(preserve=True,preserve_reason='table_'+region)
                     units.append(unit)
-            units.sort(key=lambda u:(u.get('flow_order',u['bbox'][1]),u['bbox'][0]))
+            if academic and column_info:
+                from .academic_layout import order_units
+                order_units(units,column_info)
+            else:units.sort(key=lambda u:(u.get('flow_order',u['bbox'][1]),u['bbox'][0]))
             for unit in units:
                 unit['source_page_index']=index
+                if academic and unit['kind']=='page_marker':unit.update(preserve=True,preserve_reason='page_margin')
                 if unit['bbox'][1]>page.rect.height*.94 and len(unit['source'])<=20:
                     unit.update(kind='page_marker',preserve=True,preserve_reason='page_margin')
                 # Keep OCR specks in the IR, but not between the last/first body
@@ -251,6 +275,9 @@ def analyze(source, selected, progress=lambda *_: None, ocr_mode='auto', cancel=
                 unit['fragments']=[dict(source_page_index=index,bbox=unit['bbox'],source=unit['source'],
                                         raw_source=unit.get('raw_source',unit['source']),extraction=method,ocr_confidence_min=min(scores) if scores else None,
                                         layout_lines=unit.get('layout_lines',[]),cell_bbox=unit.get('cell_bbox'),rotation=unit.get('rotation',0),region_bbox=unit.get('region_bbox'),erase_patch=unit.get('erase_patch'))]
+                if unit.get('column_bbox'):
+                    unit['fragments'][0]['column_bbox']=unit['column_bbox']
+                    unit['fragments'][0]['column_region']=f'{index}:{unit["flow_group"][0]}:{unit["column_index"]}'
             extracted.append(units)
             pages.append(page_info)
         # Repeated running titles are metadata; do not let them sever sentences
@@ -262,6 +289,8 @@ def analyze(source, selected, progress=lambda *_: None, ocr_mode='auto', cancel=
             return None
         keys=Counter(key for units,page in zip(extracted,pages) for key in
                      set(filter(None,(header_key(u,page) for u in units))))
+        footer_key=lambda u,p:re.sub(r'\W+','',u['source']).casefold() if u['bbox'][1]>p['height']*.88 and len(u['source'])<180 else None
+        footers=Counter(key for units,page in zip(extracted,pages) for key in set(filter(None,(footer_key(u,page) for u in units)))) if academic else {}
         metadata={'page_marker','running_header','caption'}
         for page_number,(units,page_info) in enumerate(zip(extracted,pages)):
             page_text=' '.join(unit['source'] for unit in units)
@@ -282,6 +311,8 @@ def analyze(source, selected, progress=lambda *_: None, ocr_mode='auto', cancel=
                     reference_section='index'
                     page_info['warnings'].append('색인 형식과 다음 쪽 제목을 확인해 항목을 원문으로 보존했습니다. 복잡한 열은 원본을 보세요.')
             for unit in units:
+                if academic and footers.get(footer_key(unit,page_info),0)>=2:
+                    unit.update(kind='page_marker',preserve=True,preserve_reason='repeated_running_footer')
                 key=header_key(unit,page_info)
                 if key and (keys[key]>=2 or key in {'foreword','introduction','contents'} or any(key.startswith(k) and len(k)>=len(key)*.55 for k,n in keys.items() if n>=3 and len(k)>=15)):
                     unit.update(kind='running_header',preserve=True,preserve_reason='repeated_running_title')
@@ -306,6 +337,9 @@ def analyze(source, selected, progress=lambda *_: None, ocr_mode='auto', cancel=
                         any(box[1]<h['bbox'][3] and box[3]<=h['bbox'][3]+12 and
                             box[0]>=h['bbox'][0] and box[2]<=h['bbox'][2] for h in headers)):
                         unit.update(kind='page_marker',preserve=True,preserve_reason='ocr_overlapping_running_header')
+            if academic and page_info.get('reading_columns'):
+                from .academic_layout import join_column_continuations
+                join_column_continuations(units,page_info['height'])
             body=[u for u in units if u['kind'] not in metadata]
             first_body=next((u for u in body if u['kind'] not in {'table_cell','diagram_label'}),None)
             prior=next((u for u in reversed(blocks) if u['kind'] not in metadata),None)
@@ -338,10 +372,14 @@ def analyze(source, selected, progress=lambda *_: None, ocr_mode='auto', cancel=
                             ocr_confidence_min=min(scores) if scores else None)
                 logical.append(item);by_page[indices[0]]['block_ids'].append(bid)
                 for index in indices[1:]:by_page[index]['continuations'].append(dict(id=bid,source_page_index=indices[0],source_page_indices=indices))
-        return dict(parser=PARSER, ocr=signature(ocr_mode,recovery), pages=pages, blocks=logical,
+        result=dict(parser=PARSER, ocr=signature(ocr_mode,recovery), pages=pages, blocks=logical,
                     limitations=['빈 줄·제목·글머리표로 문단을 나누고 연속 선택한 쪽의 미완성 본문을 연결합니다. 복잡한 2단·표는 검토가 필요합니다.',
                                  '한국어 PDF는 읽기형 재배치이며, 위치 대응 대조본은 원문 영역을 따릅니다. 번역이 길면 보충면으로 이어지고 복잡한 조판은 검토가 필요합니다.',
                                  'OCR은 영어 인쇄체 중심입니다. 손글씨·수식·흐린 스캔·복잡한 표의 인식 및 읽기 순서는 보장하지 않습니다. 기계 의미 검수는 coverage를 확인하세요.'])
+        if academic:
+            from .academic_layout import VERSION as ACADEMIC_VERSION
+            result['academic_layout']=ACADEMIC_VERSION
+        return result
     finally:
         doc.close()
 
@@ -480,6 +518,8 @@ def export(ir, records, original, folder, title, job, cancel=lambda: False):
                          reconstructed_fragments=sum(p.get('ocr',{}).get('reconstructed_fragments',0) for p in ir['pages'])),
                      terminology_version=ir.get('terminology',{}).get('version'),
                      reading_column_pages=sum(bool(p.get('reading_columns')) for p in ir['pages']),
+                     academic_layout=ir.get('academic_layout'),
+                     column_continuation_paragraphs=sum(bool(b.get('column_continuation')) for b in ir['blocks']),
                      prose_table_regions=sum(t.get('method')=='captioned_prose_columns' for p in ir['pages'] for t in p.get('table_regions',[])),
                      sentence_repair_attempted_paragraphs=sum(bool(r.get('sentence_repair')) for r in records.values()),
                      sentence_repair_accepted_paragraphs=sum(r.get('sentence_repair',{}).get('status')=='accepted' for r in records.values()),
