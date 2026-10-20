@@ -53,12 +53,15 @@ def main():
     q=read_json(Path(s['output'])/'Quality.json');ir=read_json(folder/'ir.json')
     assert q['failed_paragraphs']==0 and q['layout']['validation']['status']=='passed'
     assert q['reading_column_pages']==1 and any(b.get('column_continuation') for b in ir['blocks'])
+    assert q['korean_output_layout']=='source_columns' and q['layout']['korean_layout']=='source_columns'
     joined=next(r for r in q['records'] if 'The effect was observed during treatment' in r['source'])
     assert len(joined['page_alignment']['parts'])==2 and all(p['shared_boundary'] for p in joined['page_alignment']['parts'])
     assert sha256(source)==sha256(Path(s['output'])/'Original.pdf')
     with fitz.open(source) as original,fitz.open(Path(s['output'])/'Bilingual.pdf') as dual:
         assert original[0].get_pixmap().samples==dual[0].get_pixmap(clip=original[0].rect).samples
         assert dual[0].search_for('왼쪽')[0].x0<900<dual[0].search_for('오른쪽')[0].x0
+    with fitz.open(Path(s['output'])/'Korean.pdf') as korean:
+        assert korean[0].search_for('왼쪽')[0].x1<300<korean[0].search_for('오른쪽')[0].x0
     before=len(calls);jobs.run_job(folder);assert len(calls)==before and read_json(folder/'state.json')['analysis_cache_hit']
     # Existing revision 2 jobs keep the old parser policy and checkpoint key.
     old=jobs.create_job(source,project/'test_vault',ocr_mode='off');state=read_json(old/'state.json')

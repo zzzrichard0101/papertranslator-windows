@@ -70,6 +70,7 @@ def create_job(source, destination, page_spec='', profile='general', title='',mo
         state['quality_policy']['editor_output_version']=COMPACT_VERSION
     state['inference_acceleration']=inference_acceleration
     state['processing_revision']=3
+    state['document_layout']='auto_columns_v1'
     if cloud:state['quality_policy']['cloud']={k:cloud[k] for k in ['enabled','model','max_requests']}
     state['ocr_mode']=ocr_mode
     state['bilingual_layout']=bilingual_layout

@@ -480,9 +480,18 @@ def export(ir, records, original, folder, title, job, cancel=lambda: False):
         if sha256(folder/'Original.pdf') != job['source_sha256']:
             raise RuntimeError('원본 복사본 검증 실패')
         if ir.get('terminology'):atomic_json(folder/'Terminology.json',ir['terminology'])
-        mapping = flow_pdf(ir, records, folder/'Korean.pdf', title)
-        layout=None;dual_mapping=mapping
-        if job.get('bilingual_layout','reflow')=='source_position':
+        layout=None
+        if job.get('document_layout')=='auto_columns_v1' and any(p.get('reading_columns') for p in ir['pages']):
+            from .column_layout import compose
+            layout=compose(ir,records,original,folder/'Bilingual.pdf',folder/'Korean.pdf',cancel)
+            mapping=dual_mapping=layout['source_indices']
+            atomic_json(folder/'Layout.json',layout)
+        else:
+            mapping=flow_pdf(ir,records,folder/'Korean.pdf',title)
+            dual_mapping=mapping
+        if layout is not None:
+            pass
+        elif job.get('bilingual_layout','reflow')=='source_position':
             from .layout import bilingual_pdf
             layout=bilingual_pdf(ir,records,original,folder/'Bilingual.pdf',cancel)
             dual_mapping=layout['source_indices'];atomic_json(folder/'Layout.json',layout)
@@ -536,6 +545,7 @@ def export(ir, records, original, folder, title, job, cancel=lambda: False):
                      model=job['model'], source_sha256=job['source_sha256'],
                      selected_source_pages=[p['source_page_index']+1 for p in ir['pages']],
                      korean_output_source_indices=mapping, output_layout=job.get('bilingual_layout','reflow'),
+                     korean_output_layout='source_columns' if layout and layout.get('korean_layout')=='source_columns' else 'reflow',
                      bilingual_output_source_indices=dual_mapping,layout=layout,
                      failed_paragraphs=len(failed), warnings_paragraphs=len(warnings),
                      translated_paragraphs=sum(r['status']=='translated' for r in records.values()),
@@ -594,7 +604,7 @@ def export(ir, records, original, folder, title, job, cancel=lambda: False):
                     사용자승인=False, 번역실패문단수=len(failed), tags=['논문','번역'])
         name=safe_title(title)
         note='---\n'+'\n'.join(k+': '+json.dumps(v,ensure_ascii=False) for k,v in fields.items())+'\n---\n\n# '+name+'\n\n'
-        note+=f'> 초기 개발판: 기계 의미 검수 {len(reviewed)}/{len(translated)}문단 · 인간 승인 없음. OCR {quality["ocr_pages"]}쪽 · 인식 오류 대조 필요. 한국어 PDF는 읽기형이며 대조본 배치는 작업 설정과 Layout.json을 확인하세요.\n\n'
+        note+=f'> 초기 개발판: 기계 의미 검수 {len(reviewed)}/{len(translated)}문단 · 인간 승인 없음. OCR {quality["ocr_pages"]}쪽 · 인식 오류 대조 필요. 한국어 PDF 배치: {quality["korean_output_layout"]}. 대조본 배치는 Layout.json을 확인하세요.\n\n'
         note+='\n'.join(f'- [[{f}|{label}]]' for f,label in [('Original.pdf','영어 원문'),('Korean.pdf','한국어'),('Bilingual.pdf','영한 대조'),('Review.html','문단 검토')])
         note+='\n\n![[Korean.pdf]]\n\n## 메모\n\n'
         (folder/(name+'.md')).write_text(note,encoding='utf-8')

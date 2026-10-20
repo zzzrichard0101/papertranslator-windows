@@ -93,7 +93,7 @@ class Window(QMainWindow):
         self.api_btn.setFixedSize(130,36)
         form.addRow('교정 방식',quality_row)
         self.layout_choice=QComboBox()
-        self.layout_choice.addItem('자동 열 인식 · 원문 위치 대응 · 표·문단 배치 유지','source_position')
+        self.layout_choice.addItem('자동 열 인식 · 번역본 2단 유지 · 원문 위치 대응','source_position')
         self.layout_choice.addItem('읽기형 · 번역문 순서대로 배치','reflow')
         self.layout_choice.setCurrentIndex(max(0,self.layout_choice.findData(self.settings.get('bilingual_layout','source_position'))))
         self.layout_choice.setToolTip('새 작업은 1단/2단 본문과 전체 폭 제목·캡션을 자동 구분합니다. 확인된 열 경계의 연결 문장은 함께 번역하고 각 영역에 대응시킵니다. 넘치는 내용은 같은 원문의 보충면에 이어 싣습니다. 기존 작업은 원래 분석 설정을 유지합니다.')
