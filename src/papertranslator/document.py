@@ -53,6 +53,8 @@ def protected_kind(text, spans):
 
 def paragraph_units(page, text_blocks=None,source_integrity=False):
     """Use blank lines, typography and bullets, including across PDF text blocks."""
+    from .source_integrity import advanced,caption_start
+    strict=advanced(source_integrity)
     units=[];current=[];previous=None
     def flush():
         nonlocal current
@@ -89,6 +91,7 @@ def paragraph_units(page, text_blocks=None,source_integrity=False):
                               preserve=True,preserve_reason='page_number' if marker else region,style_runs=spans))
             if block.get('flow_order') is not None:units[-1]['flow_order']=block['flow_order']
             continue
+        suppress_caption=False
         for line in block['lines']:
             spans=line['spans'];text=''.join(s['text'] for s in spans)
             if not text.strip():flush();previous=None;continue
@@ -96,15 +99,27 @@ def paragraph_units(page, text_blocks=None,source_integrity=False):
             count=sum(len(s['text']) for s in visible)
             bold=sum(len(s['text']) for s in visible if s.get('flags',0)&16)
             heading=len(text)<180 and (bold>count*.75 or max(s['size'] for s in visible)>=16)
-            heading|=bool(re.match(r'^\s*(?:Table|Figure|Box)\s+\d+(?:\.\d+)?(?:\s|$)',text,re.I))
+            heading|=caption_start(text) if strict else bool(re.match(r'^\s*(?:Table|Figure|Box)\s+\d+(?:\.\d+)?(?:\s|$)',text,re.I))
+            layout_kind=line.get('layout_kind')
+            if strict and suppress_caption and layout_kind=='caption':layout_kind=None
+            if (strict and current and previous and current[0]['kind']=='paragraph' and
+                line.get('flow_group')==current[0].get('flow_group') and
+                re.match(r'^\s*(?:Table|Figure|Fig\.|Box)\s*\d',text,re.I) and
+                re.search(r'\b(?:in|see|from|of|to|with|and|by|as|at|compare|consult)\s*$',current[-1]['text'],re.I) and
+                -2<=line['bbox'][1]-previous['bbox'][3]<=max(s['size'] for s in visible)*.65 and
+                abs(max(s['size'] for s in visible)-max(s['size'] for s in previous['spans']))<.4):
+                heading=False
+                if layout_kind=='caption':suppress_caption=True;layout_kind=None
             rotation=line.get('rotation',0)
             diagram_label=bool(rotation or line.get('diagram_label'))
-            isolated=diagram_label or bool(line.get('layout_kind'))
-            if source_integrity and line.get('layout_kind')=='caption' and not diagram_label:
+            isolated=diagram_label or bool(layout_kind)
+            if source_integrity and layout_kind=='caption' and not diagram_label:
                 from .source_integrity import CAPTION
                 isolated=False;heading=bool(CAPTION.match(text))
+            if strict and layout_kind=='footnote' and not diagram_label:
+                isolated=False;heading=False
             if isolated:flush();previous=None
-            kind=line.get('layout_kind') or ('diagram_label' if diagram_label else ('list_label' if re.match(r'^\s*Level\s*\d+\s*$',text,re.I) else ('heading' if heading else 'paragraph')))
+            kind=layout_kind or ('diagram_label' if diagram_label else ('list_label' if re.match(r'^\s*Level\s*\d+\s*$',text,re.I) else ('heading' if heading else 'paragraph')))
             gap=previous and line['bbox'][1]-previous['bbox'][3]>max(s['size'] for s in visible)*.65
             bullet=bool(re.match(r'^\s*[•●▪◦]',text))
             numbered=bool(re.match(r'^\s*\d+[.)]\s',text))
@@ -164,6 +179,8 @@ def segments(text, limit=1800):
 
 
 def analyze(source, selected, progress=lambda *_: None, ocr_mode='auto', cancel=lambda: False, ocr_engine=None,cache_dir=None,recovery=False,structured=False,academic=False,source_integrity=False):
+    from .source_integrity import advanced,caption_start
+    strict=advanced(source_integrity)
     doc = fitz.open(source); pages = []; blocks = []; extracted=[]
     engine=ocr_engine;column_hint=None;hint_size=None;previous_index=None
     def recognize(pixels):
@@ -210,8 +227,8 @@ def analyze(source, selected, progress=lambda *_: None, ocr_mode='auto', cancel=
             if academic:
                 for block in body_blocks:
                     block_lines=block.get('lines',[])
-                    if block_lines and re.match(r'^\s*(?:Table|Figure|Fig\.|Box)\s*\d',
-                        ''.join(s['text'] for s in block_lines[0]['spans']),re.I):
+                    first=''.join(s['text'] for s in block_lines[0]['spans']) if block_lines else ''
+                    if block_lines and (caption_start(first) if strict else re.match(r'^\s*(?:Table|Figure|Fig\.|Box)\s*\d',first,re.I)):
                         for line in block_lines:line['layout_kind']='caption'
             else:
                 for line in lines:
@@ -243,7 +260,7 @@ def analyze(source, selected, progress=lambda *_: None, ocr_mode='auto', cancel=
             accounting_blocks=body_blocks
             if source_integrity:
                 from .source_integrity import split_footnote_markers
-                body_blocks=split_footnote_markers(body_blocks,page.rect.height)
+                body_blocks=split_footnote_markers(body_blocks,page.rect.height,classify=strict)
             units=paragraph_units(page,body_blocks,source_integrity=source_integrity)
             if source_integrity:
                 from .source_integrity import validate_lines
@@ -265,8 +282,10 @@ def analyze(source, selected, progress=lambda *_: None, ocr_mode='auto', cancel=
             else:units.sort(key=lambda u:(u.get('flow_order',u['bbox'][1]),u['bbox'][0]))
             for unit in units:
                 unit['source_page_index']=index
+                if strict and unit.get('preserve_reason')=='footnote_marker':unit['kind']='footnote_marker'
                 if academic and unit['kind']=='page_marker':unit.update(preserve=True,preserve_reason='page_margin')
-                if unit['bbox'][1]>page.rect.height*.94 and len(unit['source'])<=20:
+                if (unit['bbox'][1]>page.rect.height*.94 and len(unit['source'])<=20 and
+                    not (strict and unit['kind'] in {'footnote','footnote_marker'})):
                     unit.update(kind='page_marker',preserve=True,preserve_reason='page_margin')
                 # Keep OCR specks in the IR, but not between the last/first body
                 # lines. Only very short non-word fragments at the outer margin.
@@ -309,6 +328,7 @@ def analyze(source, selected, progress=lambda *_: None, ocr_mode='auto', cancel=
         footer_key=lambda u,p:re.sub(r'\W+','',u['source']).casefold() if u['bbox'][1]>p['height']*.88 and len(u['source'])<180 else None
         footers=Counter(key for units,page in zip(extracted,pages) for key in set(filter(None,(footer_key(u,page) for u in units)))) if academic else {}
         metadata={'page_marker','running_header','caption'}
+        if strict:metadata.update({'footnote','footnote_marker'})
         prior_references=False
         for page_number,(units,page_info) in enumerate(zip(extracted,pages)):
             page_text=' '.join(unit['source'] for unit in units)
@@ -329,7 +349,8 @@ def analyze(source, selected, progress=lambda *_: None, ocr_mode='auto', cancel=
                     reference_section='index'
                     page_info['warnings'].append('색인 형식과 다음 쪽 제목을 확인해 항목을 원문으로 보존했습니다. 복잡한 열은 원본을 보세요.')
             for unit in units:
-                if academic and footers.get(footer_key(unit,page_info),0)>=2:
+                if (academic and footers.get(footer_key(unit,page_info),0)>=2 and
+                    not (strict and unit['kind'] in {'footnote','footnote_marker'})):
                     unit.update(kind='page_marker',preserve=True,preserve_reason='repeated_running_footer')
                 key=header_key(unit,page_info)
                 if key and (keys[key]>=2 or key in {'foreword','introduction','contents'} or any(key.startswith(k) and len(k)>=len(key)*.55 for k,n in keys.items() if n>=3 and len(k)>=15)):
@@ -361,7 +382,7 @@ def analyze(source, selected, progress=lambda *_: None, ocr_mode='auto', cancel=
                         unit.update(kind='page_marker',preserve=True,preserve_reason='ocr_overlapping_running_header')
             if academic and page_info.get('reading_columns'):
                 from .academic_layout import join_column_continuations
-                join_column_continuations(units,page_info['height'])
+                join_column_continuations(units,page_info['height'],ignore_footnotes=strict)
             body=[u for u in units if u['kind'] not in metadata]
             first_body=next((u for u in body if u['kind'] not in {'table_cell','diagram_label'}),None)
             prior=next((u for u in reversed(blocks) if u['kind'] not in metadata),None)
@@ -407,7 +428,7 @@ def analyze(source, selected, progress=lambda *_: None, ocr_mode='auto', cancel=
             result['academic_layout']=ACADEMIC_VERSION
         if source_integrity:
             from .source_integrity import VERSION as SOURCE_VERSION
-            result['source_integrity']=dict(version=SOURCE_VERSION,status='passed',
+            result['source_integrity']=dict(version=SOURCE_VERSION if source_integrity is True else source_integrity,status='passed',
                 scope='extracted text to translation input; not OCR or semantic certification',
                 segmented_units=len(logical))
         return result

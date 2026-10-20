@@ -1,6 +1,6 @@
 [project]
 name = "papertranslator-windows"
-version = "0.5.9a2"
+version = "0.5.10a1"
 license = "AGPL-3.0-only"
 readme = "README.md"
 description = "Local Windows academic PDF translation workbench"

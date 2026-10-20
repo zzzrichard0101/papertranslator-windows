@@ -24,12 +24,14 @@ def occurrences(source, text):
 
 def build(ir, profile):
     from .quality import relevant_terms
+    academic=ACADEMIC+([('uniformly random','균일하게 무작위로')]
+        if ir.get('source_integrity',{}).get('version')=='source-integrity-2' else [])
     counts = Counter(); pages = {}; targets = {}; definitions = {}
     for block in ir['blocks']:
         if block['preserve']:
             continue
         text = block['source']
-        terms = relevant_terms(text, profile) + [(s,t) for s,t in ACADEMIC if occurrences(s,text)]
+        terms = relevant_terms(text, profile) + [(s,t) for s,t in academic if occurrences(s,text)]
         for source, target in terms:
             if source in LOCAL_ONLY:
                 continue

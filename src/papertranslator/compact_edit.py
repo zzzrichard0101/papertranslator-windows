@@ -69,6 +69,9 @@ def edit(backend,source,draft,alternative='',context=None,response_sink=None,typ
         json.dumps(dict(SOURCE=source,DRAFT=draft,ALTERNATIVE=alternative,CONTEXT=context or {},
             PROTECTED_LITERALS=[dict(text=s,count=source.count(s)) for s in sorted(set(protected_literals(source,typed)))],
             TERMINOLOGY=terms_for(source,'art_therapy' if 'art therapy' in (context or {}).get('domain','') else None,context)),ensure_ascii=False))
+    if (context or {}).get('terminology_usage')=='meaning_hints':
+        prompt=('Terminology hints describe meaning, not compulsory word substitutions. Preserve equivalent natural wording. '
+                'Never insert a second rendering of a concept already translated in the same sentence.\n'+prompt)
     raw=backend.translate(prompt,max_tokens=1800,json_schema=SCHEMA)
     if response_sink:response_sink(raw)
     return validate(json.loads(raw['text']),source,draft,typed=typed),raw

@@ -148,8 +148,9 @@ def _run(folder, retry_failed):
         upgraded=state.get('processing_revision',0)>=1
         structured=state.get('processing_revision',0)>=2
         academic=state.get('processing_revision',0)>=3
-        from .source_integrity import VERSION as SOURCE_VERSION
-        source_integrity=state.get('source_integrity_policy')==SOURCE_VERSION
+        from .source_integrity import SUPPORTED
+        SOURCE_VERSION=state.get('source_integrity_policy')
+        source_integrity=SOURCE_VERSION if SOURCE_VERSION in SUPPORTED else False
         analysis_identity=dict(source_sha256=state['source_sha256'],selected=selected,
             parser=PARSER,ocr=signature(state.get('ocr_mode','off'),recovery=upgraded))
         if structured:

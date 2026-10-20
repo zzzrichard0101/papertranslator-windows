@@ -38,7 +38,10 @@ def policy(mode,primary,registry):
 
 def attach_context(ir,title,profile='general',document_terms=False):
     body=[b for b in ir['blocks'] if not b['preserve']]
-    for index,block in enumerate(body):
+    separate_notes=ir.get('source_integrity',{}).get('version')=='source-integrity-2'
+    context_body=[b for b in body if not separate_notes or b.get('kind')!='footnote']
+    context_order={id(b):i for i,b in enumerate(context_body)}
+    for block in body:
         # Short labels/instructions are easily replaced by surrounding prose in
         # translation specialists. Keep their translation input self-contained.
         if len(block['source'])<100:
@@ -46,12 +49,14 @@ def attach_context(ir,title,profile='general',document_terms=False):
                                    document=title[:160]) if block.get('kind') in {'table_cell','diagram_label'} else {})
             continue
         # Nearby selected text only; never include paths, API keys or user notes.
-        previous=body[index-1] if index else None
-        following=body[index+1] if index+1<len(body) else None
+        position=context_order.get(id(block))
+        previous=context_body[position-1] if position is not None and position else None
+        following=context_body[position+1] if position is not None and position+1<len(context_body) else None
         near=lambda other:other and abs(other['source_page_index']-block['source_page_index'])<=1
         block['context']=dict(document=title[:160],domain='art therapy and clinical research' if profile=='art_therapy' else profile,
             before=previous['source'][-220:] if near(previous) else '',
             after=following['source'][:220] if near(following) else '')
+        if separate_notes:block['context']['terminology_usage']='meaning_hints'
     if document_terms:
         from .terminology import build, for_source
         glossary=build(ir,profile);ir['terminology']=glossary
@@ -119,6 +124,9 @@ def edit(backend,source,draft,alternative='',context=None,response_sink=None,rej
         'No inference from missing text. No additional facts. No Hanja/Japanese in Korean prose. '
         'EBP = 근거 기반 실천; EBM = 근거 기반 의학; RCT = 무작위 대조시험; effectiveness = 효과성. '
         'Return only the required JSON.\n'+
+        ('Terminology hints describe meaning, not compulsory word substitutions. Preserve equivalent natural wording. '
+         'Never insert a second rendering of a concept already translated in the same sentence.\n'
+         if (context or {}).get('terminology_usage')=='meaning_hints' else '')+
         ('Terminology when present in SOURCE: radix sort = 기수 정렬.\n' if typed in {'typed-v2','typed-v3'} and 'radix sort' in source else '')+
         ('The previous candidate was rejected: '+rejection[:300]+'. Fix the cited problem; do not repeat that invalid candidate.\n'+
          ('Fix ALL listed failures together in the complete revision.\n' if typed in {'typed-v2','typed-v3'} else '') if rejection else '')+json.dumps(dict(SOURCE=source,DRAFT=draft,

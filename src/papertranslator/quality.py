@@ -155,6 +155,8 @@ def make_prompt(text, mapping, profile, adapter='hy', context=None):
     terms = terms_for(text,profile,context)
     hint = ('Reference the following translations:\n' + '\n'.join(f'{s} translates to {t}' for s, t in terms) + '\n\n') if terms else ''
     rule = ('Preserve each bracketed PX identifier exactly once. ' if mapping else '')
+    if (context or {}).get('terminology_usage')=='meaning_hints':
+        rule+='Use terminology hints for meaning; render each source concept once without adding a repeated paraphrase. '
     surroundings=''
     context_data={k:v for k,v in (context or {}).items() if k!='terminology'}
     if context_data:

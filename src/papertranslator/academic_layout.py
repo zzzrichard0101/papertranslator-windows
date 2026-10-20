@@ -81,10 +81,11 @@ def _algorithms(page,blocks):
     return result
 
 
-def join_column_continuations(units,height):
+def join_column_continuations(units,height,ignore_footnotes=False):
     """Join only an unfinished body paragraph at a verified column transition."""
     from .document import join_lines
-    body=[u for u in units if u['kind'] not in {'page_marker','running_header','caption'}]
+    body=[u for u in units if u['kind'] not in {'page_marker','running_header','caption'} and
+          not (ignore_footnotes and (u['kind']=='footnote' or u.get('preserve_reason')=='footnote_marker'))]
     for left,right in zip(body,body[1:]):
         a=left['source'].rstrip();b=right['source'].lstrip()
         if (left.get('column_index')!=0 or right.get('column_index')!=1 or

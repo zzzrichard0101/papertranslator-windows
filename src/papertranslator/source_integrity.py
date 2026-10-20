@@ -3,11 +3,28 @@ from collections import Counter
 import copy
 import re
 
-VERSION = 'source-integrity-1'
+VERSION = 'source-integrity-2'
+SUPPORTED = {'source-integrity-1', VERSION}
 CAPTION = re.compile(r'^\s*(?:Fig\.|Figure|Table|Box)\s*\d', re.I)
 REFERENCE_TITLE = re.compile(r'^(?:references|bibliography)$', re.I)
 # Only observed lexical forms: never remove arbitrary compound-word hyphens.
 JOIN_WORDS = {'iterations', 'initialization', 'initialized', 'gaussians', 'rendering'}
+
+
+def advanced(policy):
+    return policy is True or policy == VERSION
+
+
+def caption_start(value):
+    """Distinguish a labelled title from prose such as 'Table 2 using ...'."""
+    match=re.match(r'^\s*(?:Fig\.|Figure|Table|Box)\s*\d+(?:\.\d+)*(.*)$',value,re.I)
+    if not match:return False
+    tail=match[1].strip()
+    if tail.startswith(('.',':')):return True
+    if not tail:return True
+    if re.match(r'^(?:using|shows?|presents?|provides?|illustrates?|lists?|compares?|'
+                r'summarizes?|can|is|was|are|were|in|on|for|of|and|as|to|with|that|which|we|the)\b',tail,re.I):return False
+    return tail[:1].isupper()
 
 
 def annotate(blocks):
@@ -46,17 +63,28 @@ def reference_units(units, previous=False):
     return active if (title or previous) else False
 
 
-def split_footnote_markers(blocks, height):
+def split_footnote_markers(blocks, height,classify=False):
     """Separate a native raised numeric prefix from its footnote body.
 
     Require a smaller, raised span at the lower page margin. Ordinary leading
     numbers, OCR guesses and inline superscripts are left alone.
     """
-    result=[]
+    result=[];active=None
     for block in blocks:
         lines=block.get('lines',[])
         first=lines[0] if lines else {}
         spans=first.get('spans',[])
+        if active and spans:
+            group,size,bottom,left=active
+            if (first.get('flow_group')==group and 0<=first['bbox'][1]-bottom<=size*1.5 and
+                abs(first['bbox'][0]-left)<12 and max(s['size'] for s in spans)<=size*1.15 and
+                not block.get('academic_preserve') and
+                all(l.get('layout_kind') in {None,'footnote'} and not l.get('rotation') for l in lines) and
+                all(s.get('extraction','native')=='native' for l in lines for s in l['spans'])):
+                block=copy.deepcopy(block);lines=block['lines'];first=lines[0];spans=first['spans']
+                for line in lines:line['layout_kind']='footnote'
+                active=(group,size,lines[-1]['bbox'][3],left)
+            else:active=None
         if len(spans)<2 or block.get('academic_preserve'):
             result.append(block);continue
         marker,body=spans[:2]
@@ -75,6 +103,9 @@ def split_footnote_markers(blocks, height):
                       max(s['bbox'][2] for s in line['spans']),max(s['bbox'][3] for s in line['spans'])]
         item['bbox']=[min(l['bbox'][0] for l in item['lines']),min(l['bbox'][1] for l in item['lines']),
                       max(l['bbox'][2] for l in item['lines']),max(l['bbox'][3] for l in item['lines'])]
+        if classify:
+            for line in item['lines']:line['layout_kind']='footnote'
+            active=(first.get('flow_group'),body['size'],item['lines'][-1]['bbox'][3],marker['bbox'][0])
         result.append(item)
     return result
 
