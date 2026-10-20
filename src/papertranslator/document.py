@@ -522,6 +522,9 @@ def export(ir, records, original, folder, title, job, cancel=lambda: False):
         coverage=len(reviewed)/len(translated) if translated else 0
         review_status='not_performed' if not reviewed else ('all_machine_reviewed' if len(reviewed)==len(translated) else 'partially_machine_reviewed')
         quality=dict(schema=6, ocr=ir.get('ocr'), ocr_pages=sum(p.get('ocr',{}).get('lines',0)>0 for p in ir['pages']),
+                     efficiency_policy=job.get('efficiency_policy'),performance=job.get('performance'),
+                     translation_response_cache_hits=sum(bool(r.get('translation_cache')) for r in records.values()),
+                     typed_preserved_units=sum(r.get('preservation_reason')=='typed_literal_v1' for r in records.values()),
                      ocr_recovery=dict(attempted_regions=sum(p.get('ocr',{}).get('recovery',{}).get('attempted_regions',0) for p in ir['pages']),
                          added_lines=sum(p.get('ocr',{}).get('recovery',{}).get('added_lines',0) for p in ir['pages']),
                          reconstructed_fragments=sum(p.get('ocr',{}).get('reconstructed_fragments',0) for p in ir['pages'])),

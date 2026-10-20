@@ -71,6 +71,8 @@ def create_job(source, destination, page_spec='', profile='general', title='',mo
     state['inference_acceleration']=inference_acceleration
     state['processing_revision']=3
     state['document_layout']='auto_columns_v1'
+    state['efficiency_policy']=dict(version='local-efficiency-1',validation='typed-v1',response_cache='resolved-2',session_reuse=True)
+    state['quality_policy']['validation']='typed-v1'
     if cloud:state['quality_policy']['cloud']={k:cloud[k] for k in ['enabled','model','max_requests']}
     state['ocr_mode']=ocr_mode
     state['bilingual_layout']=bilingual_layout
@@ -97,14 +99,29 @@ def _run(folder, retry_failed):
     state=read_json(folder/'state.json')
     if not state:
         raise ValueError('작업 기록이 없습니다.')
-    began=time.monotonic(); prior=state.get('elapsed_seconds',0); journal=None
+    began=time.monotonic(); prior=state.get('elapsed_seconds',0); journal=None;session_pool=None
+    efficient=state.get('efficiency_policy',{}).get('version')=='local-efficiency-1'
+    last_flush=0.;phase_times={};phase_started=time.monotonic();phase=state.get('status','queued')
     cancel=lambda: (folder/'cancel').exists()
     def save(status=None, stage=None, **values):
+        nonlocal last_flush,phase_started,phase
+        force=status is not None or (stage is not None and stage!=state.get('stage')) or 'output' in values
+        if status is not None and status!=phase:
+            phase_times[phase]=phase_times.get(phase,0.)+time.monotonic()-phase_started
+            phase_started=time.monotonic();phase=status
         if status: state['status']=status
         if stage: state['stage']=stage
         state.update(values); state['updated_at']=now(); state['elapsed_seconds']=round(prior+time.monotonic()-began,2)
-        atomic_json(folder/'state.json',state)
+        if efficient:
+            state['performance']=dict(phases_seconds={k:round(v,3) for k,v in phase_times.items()},
+                sessions=dict(session_pool.metrics) if session_pool else {})
+        if force or not efficient or time.monotonic()-last_flush>=.5:
+            atomic_json(folder/'state.json',state);last_flush=time.monotonic()
     try:
+        backend_factory=LlamaBackend
+        if efficient:
+            from .sessions import Sessions
+            session_pool=Sessions(LlamaBackend);backend_factory=session_pool
         ctypes.windll.kernel32.SetThreadExecutionState(0x80000001)
         save('preparing','원본 확인',pid=os.getpid(),error=None,eta_seconds=None,eta=None)
         original=folder/'Original.pdf'
@@ -141,6 +158,13 @@ def _run(folder, retry_failed):
             lambda:analyze(original,selected,lambda p:save(stage='PDF 분석 · 필요 시 로컬 OCR',current_source_page=p),
                 ocr_mode=state.get('ocr_mode','off'),cancel=cancel,cache_dir=folder/'ocr-cache',recovery=upgraded,structured=structured,academic=academic),cancel)
         save(analysis_cache_hit=analysis_hit)
+        if efficient:
+            from .typed_literals import preserved_kind
+            for block in ir['blocks']:
+                block['validation_policy']='typed-v1'
+                kind=preserved_kind(block['source'])
+                if kind and not block['preserve']:
+                    block.update(kind=kind,preserve=True,preservation_reason='typed_literal_v1')
         quality_policy=state.get('quality_policy',{'mode':'legacy'})
         if quality_policy['mode']!='legacy':attach_context(ir,state['title'],state['profile'],document_terms=upgraded)
         if ir.get('terminology'):atomic_json(folder/'Terminology.json',ir['terminology'])
@@ -154,6 +178,7 @@ def _run(folder, retry_failed):
         identity=dict(hash=state['source_sha256'], selected=selected, profile=state['profile'],
                                model=model, parser=PARSER, prompt=PROMPT_VERSION, quality=VERSION,
                                runtime=registry['runtime_release'], options=options_for(model),ocr=ir['ocr'],quality_policy=quality_policy)
+        if efficient:identity['efficiency']=state['efficiency_policy']
         if upgraded:
             from .terminology import VERSION as TERMS_VERSION
             identity['processing']=dict(revision=state['processing_revision'],terminology=TERMS_VERSION)
@@ -179,7 +204,7 @@ def _run(folder, retry_failed):
             estimate=estimator.estimate(remaining_work,current_units)
             estimate['at_elapsed_seconds']=round(prior+time.monotonic()-began,2)
             return dict(eta=estimate,eta_seconds=estimate['seconds'])
-        with LlamaBackend(folder,cancel,model=model) as backend:
+        with backend_factory(folder,cancel,model=model) as backend:
             if any(not b['preserve'] for b in pending):
                 backend.start(lambda msg: save(stage=msg))
             actual_slots=slots(backend)
@@ -193,6 +218,8 @@ def _run(folder, retry_failed):
                     record=translate_record(backend,block,state['profile'],model.get('adapter','hy'),folder,memory=journal)
                     record['wall_seconds']=round(time.monotonic()-measured_start,3)
                 record.update(extraction=block['extraction'],ocr_confidence_min=block['ocr_confidence_min'])
+                if efficient:record['validation_policy']='typed-v1'
+                if block.get('preservation_reason'):record['preservation_reason']=block['preservation_reason']
                 if block['ocr_confidence_min'] is not None and block['ocr_confidence_min']<LOW_CONFIDENCE:
                     record['issues'].append(dict(code='ocr_low_confidence',severity='major',
                                                  message='OCR 인식 원문 신뢰도가 낮습니다. 이미지 원문과 대조하세요.'))
@@ -221,7 +248,7 @@ def _run(folder, retry_failed):
         if cancel(): raise Cancelled()
         if quality_policy['mode'] in {'ensemble','hybrid'}:
             save('refining','다중 모델 원문 대조 교정',eta_seconds=None,eta=None)
-            refine_records(records,ir,quality_policy,folder,state['profile'],LlamaBackend,
+            refine_records(records,ir,quality_policy,folder,state['profile'],backend_factory,
                 journal,
                 lambda message:save(stage=message),cancel,workers=state.get('inference_parallel',1))
         if cancel():raise Cancelled()
@@ -236,7 +263,7 @@ def _run(folder, retry_failed):
             reviewer=state['reviewer']
             eligible=[r for r in records.values() if r['status']=='translated']
             save('reviewing','독립 의미 검수 모델 준비',eta_seconds=None)
-            with LlamaBackend(folder,cancel,model=reviewer,log_name='reviewer-engine.log') as backend:
+            with backend_factory(folder,cancel,model=reviewer,log_name='reviewer-engine.log') as backend:
                 backend.start(lambda msg:save(stage='독립 검수 · '+msg))
                 for index,record in enumerate(eligible):
                     if cancel(): raise Cancelled()
@@ -256,7 +283,7 @@ def _run(folder, retry_failed):
             label_model=quality_policy.get('editor') or catalog(registry).get('qwen38') or model
             label_model={**label_model,'options':{**label_model.get('options',{}),'context':8192,'temperature':.1}}
             save('fitting_labels','도식 문구와 상자 크기 맞춤',eta_seconds=None,eta=None)
-            fit_labels(records,label_model,folder,LlamaBackend,
+            fit_labels(records,label_model,folder,backend_factory,
                 journal,
                 lambda message:save(stage=message),cancel)
         if state.get('bilingual_layout','reflow')=='source_position':
@@ -265,10 +292,11 @@ def _run(folder, retry_failed):
             alignment_model=quality_policy.get('editor') or catalog(registry).get('qwen38') or model
             alignment_model={**alignment_model,'options':{**alignment_model.get('options',{}),'context':8192,'temperature':.1}}
             save('aligning','원문 쪽과 번역 대응 정리',eta_seconds=None,eta=None)
-            align_records(records,alignment_model,folder,LlamaBackend,
+            align_records(records,alignment_model,folder,backend_factory,
                 journal,
                 lambda message:save(stage=message),cancel)
         journal.snapshot()
+        if session_pool:session_pool.close()
         save('typesetting','한국어·영한 대조 PDF 조판',eta_seconds=None,current_source_page=None)
         # One result revision is committed only after both PDFs and report validate.
         staging=folder/('revision-'+uuid.uuid4().hex)
@@ -321,6 +349,7 @@ def _run(folder, retry_failed):
         save('failed','작업 실패 · 기록 보존',error=str(exc)[:1000],pid=None,eta_seconds=None)
     finally:
         try:
+            if session_pool:session_pool.close()
             if journal is not None:
                 try:journal.snapshot()
                 except OSError:pass # Compatibility snapshot only; every database commit is already durable.

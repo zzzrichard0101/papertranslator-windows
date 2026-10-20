@@ -42,7 +42,7 @@ def run(records,model,folder,backend_factory,save,progress,cancel):
                 try:
                     raw=backend.translate(prompt,max_tokens=900,json_schema=SCHEMA)
                     atomic_json(folder/'responses'/f'label-fit-{record["id"]}-{attempt}.json',raw)
-                    value=validate_edit(json.loads(raw['text']),record['source'],record['target'])
+                    value=validate_edit(json.loads(raw['text']),record['source'],record['target'],typed=record.get('validation_policy')=='typed-v1')
                     history['attempts'].append(value)
                     if value['decision']=='revise' and fits(record,value['revision'].strip()):
                         record['target']=value['revision'].strip();record['candidate']=record['target'];history['accepted']=True

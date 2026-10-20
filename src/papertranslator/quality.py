@@ -41,7 +41,14 @@ def allowed_written_numbers(source):
     return allowed
 
 
-def protect(text):
+def protected_literals(text,typed=False):
+    if not typed:return PROTECTED.findall(text)
+    from .typed_literals import EXTRA
+    pattern=re.compile('(?:'+EXTRA.pattern+')|(?:'+PROTECTED.pattern+')')
+    return pattern.findall(text)
+
+
+def protect(text,typed=False):
     prefix = 'PX' + secrets.token_hex(4).upper()
     while prefix in text:
         prefix = 'PX' + secrets.token_hex(4).upper()
@@ -50,7 +57,11 @@ def protect(text):
         token = f'[{prefix}X{len(mapping)}]'
         mapping[token] = match[0]
         return token
-    return PROTECTED.sub(replace, text), mapping
+    pattern=PROTECTED
+    if typed:
+        from .typed_literals import EXTRA
+        pattern=re.compile('(?:'+EXTRA.pattern+')|(?:'+PROTECTED.pattern+')')
+    return pattern.sub(replace, text), mapping
 
 
 def restore(text, mapping):
@@ -157,10 +168,16 @@ def make_prompt(text, mapping, profile, adapter='hy', context=None):
                    + rule + '\n\n' + text)
 
 
-def check(source, target):
+def check(source, target,typed=False):
     errors = []
     if not target.strip():
         return [dict(code='empty', severity='critical', message='번역 결과가 비어 있습니다.')]
+    if typed:
+        from .typed_literals import preserved_kind
+        if source.strip()==target.strip() and preserved_kind(source):return []
+        for literal in set(protected_literals(source,True)):
+            if source.count(literal)!=target.count(literal):
+                errors.append(dict(code='literal',severity='critical',message='인용·식별자·링크의 누락 또는 변경'))
     if '~' not in source and re.search(r'~\s*(?:을|를|이|가|에|은|는)',target):
         errors.append(dict(code='placeholder',severity='major',message='번역에 미완성 자리표시자가 있어 다시 번역합니다.'))
     if re.search(r'\bADHD\b|Attention\s+Deficit\s+Hyperactivity',source,re.I) and '공격성장애' in target:
@@ -194,7 +211,11 @@ def check(source, target):
                 return re.sub(r'([,;])\s*',r'\1 ',years[0])
             return re.sub(year_list+r'(?=\s*[:;)])',replace,match[0])
         return re.sub(r'\([^()\n]{1,500}\)',parenthetical,text)
-    numeric_source,numeric_target,unmatched=equivalent_durations(citation_spacing(normalize_percent(source)),citation_spacing(normalize_percent(target)))
+    numeric_source,numeric_target=citation_spacing(normalize_percent(source)),citation_spacing(normalize_percent(target))
+    if typed:
+        from .typed_literals import compact_counts
+        numeric_source,numeric_target=compact_counts(numeric_source,numeric_target)
+    numeric_source,numeric_target,unmatched=equivalent_durations(numeric_source,numeric_target)
     numeric_source,numeric_target,fraction_unmatched=equivalent_fractions(numeric_source,numeric_target)
     unmatched+=fraction_unmatched
     # Lexical levels/modes are not added participant counts. Mask only the
