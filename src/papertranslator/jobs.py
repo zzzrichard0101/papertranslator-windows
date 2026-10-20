@@ -26,8 +26,9 @@ from .storage import atomic_json, fingerprint, now, pages, read_json, root, safe
 TERMINAL = {'review_required','completed_with_warnings', 'failed', 'cancelled', 'interrupted'}
 
 
-def create_job(source, destination, page_spec='', profile='general', title='',model_key=None,independent_review=False,ocr_mode='auto',quality_mode='contextual',bilingual_layout='source_position',inference_parallel=1):
+def create_job(source, destination, page_spec='', profile='general', title='',model_key=None,independent_review=False,ocr_mode='auto',quality_mode='contextual',bilingual_layout='source_position',inference_parallel=1,inference_acceleration='none',compact_editor=False):
     if inference_parallel not in {1,2}:raise ValueError('지원하지 않는 동시 처리 수')
+    if inference_acceleration not in {'none','mtp'} or type(compact_editor) is not bool:raise ValueError('지원하지 않는 가속/교정 출력 설정')
     signature(ocr_mode)
     if bilingual_layout not in {'source_position','reflow'}:raise ValueError('지원하지 않는 대조본 배치입니다.')
     source=Path(source).resolve(); destination=Path(destination).resolve()
@@ -53,7 +54,21 @@ def create_job(source, destination, page_spec='', profile='general', title='',mo
         state['model']['options']={**state['model'].get('options',{}),'temperature':.2}
     state['inference_parallel']=inference_parallel
     if inference_parallel==2:state['model']['options']={**state['model'].get('options',{}),'parallel':2}
-    state['quality_policy']=policy(quality_mode,state['model'],read_json(root()/'model_registry.json',{}))
+    registry=read_json(root()/'model_registry.json',{})
+    state['quality_policy']=policy(quality_mode,state['model'],registry)
+    if inference_acceleration=='mtp':
+        from .acceleration import apply,capable
+        applicable=[state['model'],state['quality_policy'].get('editor',{})]
+        if not any(capable(m,registry) for m in applicable):raise ValueError('설치된 모델/교정 모델에 확인된 MTP 모델이 없습니다.')
+        state['model']=apply(state['model'],registry,'mtp')
+        if state['quality_policy'].get('editor'):
+            state['quality_policy']['editor']=apply(state['quality_policy']['editor'],registry,'mtp')
+    if compact_editor:
+        if quality_mode not in {'ensemble','hybrid'}:raise ValueError('수정 구절 출력은 정밀/혼합 교정에서 사용합니다.')
+        state['quality_policy']['editor_output']='patch-v1'
+        from .compact_edit import VERSION as COMPACT_VERSION
+        state['quality_policy']['editor_output_version']=COMPACT_VERSION
+    state['inference_acceleration']=inference_acceleration
     state['processing_revision']=2
     if cloud:state['quality_policy']['cloud']={k:cloud[k] for k in ['enabled','model','max_requests']}
     state['ocr_mode']=ocr_mode
@@ -162,7 +177,7 @@ def _run(folder, retry_failed):
             if any(not b['preserve'] for b in pending):
                 backend.start(lambda msg: save(stage=msg))
             actual_slots=slots(backend)
-            save(inference_slots=actual_slots)
+            save(inference_slots=actual_slots,inference_speculation=backend.options.get('speculation','none'))
             def translate_block(block):
                 if cancel():raise Cancelled()
                 measured_start=time.monotonic()

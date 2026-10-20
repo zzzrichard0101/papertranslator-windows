@@ -29,4 +29,7 @@ def options_for(model):
         raise ValueError('검증되지 않은 문맥/병렬 설정')
     if options['kv'] not in {'f16','q8_0'} or options['flash_attention'] not in {'on','off','auto'}:
         raise ValueError('지원하지 않는 KV/Flash Attention 설정')
+    if options.get('speculation','none') not in {'none','mtp'} or type(options.get('spec_tokens',3)) is not int or not 1<=options.get('spec_tokens',3)<=4:
+        raise ValueError('지원하지 않는 MTP 설정')
+    if 'benchmark_metrics' in options and type(options['benchmark_metrics']) is not bool:raise ValueError('잘못된 벤치마크 계측 설정')
     return options

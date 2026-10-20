@@ -116,8 +116,20 @@ def edit_record(backend,record,block,settings,stamp,folder,cancel):
             if cancel():raise Cancelled()
             try:
                 suffix='' if not attempt else f'-attempt{attempt+1}'
-                value,raw=edit(backend,record['source'],draft,alternative,block.get('context'),
-                    lambda raw:atomic_json(folder/'responses'/('edit-'+record['id']+suffix+'.json'),raw),rejection=rejection)
+                value=None
+                if not attempt and settings.get('editor_output')=='patch-v1' and len(draft)>=240:
+                    from .compact_edit import edit as compact_edit,VERSION as COMPACT_VERSION
+                    result['compact']=dict(version=COMPACT_VERSION,status='attempted')
+                    try:
+                        value,raw=compact_edit(backend,record['source'],draft,alternative,block.get('context'),
+                            lambda raw:atomic_json(folder/'responses'/('edit-'+record['id']+'-patch.json'),raw))
+                        result['compact'].update(status='accepted',decision=value['decision'])
+                    except Cancelled:raise
+                    except Exception as exc:
+                        result['compact'].update(status='fallback',reason=str(exc)[:300])
+                if value is None:
+                    value,raw=edit(backend,record['source'],draft,alternative,block.get('context'),
+                        lambda raw:atomic_json(folder/'responses'/('edit-'+record['id']+suffix+'.json'),raw),rejection=rejection)
                 result['attempts'].append(dict(attempt=attempt+1,decision=value['decision']))
                 break
             except Cancelled:raise
@@ -137,6 +149,8 @@ def edit_record(backend,record,block,settings,stamp,folder,cancel):
         result.update(decision='uncertain',error=str(exc)[:300])
         record['issues'].append(dict(code='edit_unvalidated',severity='major',message='교정 후보를 검증하지 못해 기존 번역을 유지했습니다.'))
     record['refinement']=result
+    if getattr(backend,'options',{}).get('speculation'):
+        result['inference_speculation']=backend.options['speculation']
     return record
 
 

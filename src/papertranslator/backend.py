@@ -75,23 +75,30 @@ class LlamaBackend:
             raise Cancelled()
 
     def start(self, progress=lambda _: None):
-        try:
-            return self._start(progress)
-        except Cancelled:
-            raise
-        except Exception:
-            if self.options['parallel']!=2:raise
-            self.close()
-            self.options['parallel']=1
-            self.log_name=Path(self.log_name).stem+'-sequential.log'
-            progress('동시 처리 엔진 시작 실패 · 순차 처리로 재시도')
-            return self._start(progress)
+        while True:
+            try:
+                return self._start(progress)
+            except Cancelled:
+                raise
+            except Exception:
+                if self.options.get('speculation')=='mtp':
+                    self.close();self.options['speculation']='none'
+                    self.log_name=Path(self.log_name).stem+'-no-mtp.log'
+                    progress('MTP 엔진 시작 실패 · 일반 추론으로 재시도')
+                elif self.options['parallel']==2:
+                    self.close();self.options['parallel']=1
+                    self.log_name=Path(self.log_name).stem+'-sequential.log'
+                    progress('동시 처리 엔진 시작 실패 · 순차 처리로 재시도')
+                else:raise
 
     def _start(self, progress=lambda _: None):
         self.check()
         path = Path(self.model['path'])
         if not path.is_file() or sha256(path) != self.model['sha256']:
             raise RuntimeError('모델 파일 SHA256 검증 실패. 설치를 다시 검사하세요.')
+        from .acceleration import capable,arguments
+        if self.options.get('speculation')=='mtp' and not capable(self.model,self.registry):
+            raise ValueError('이 모델/런타임의 MTP 호환성이 확인되지 않았습니다.')
         self.check()
         exe = next(Path(self.registry['runtime_dir']).rglob('llama-server.exe'), None)
         if not exe:
@@ -106,6 +113,8 @@ class LlamaBackend:
                 '-np', str(self.options['parallel']), '-t', str(self.options['threads']),
                 '-ctk',self.options['kv'],'-ctv',self.options['kv'],'-fa',self.options['flash_attention'],
                 '--no-webui', '--jinja', '--no-context-shift','--offline']
+        args+=arguments(self.options)
+        if self.options.get('benchmark_metrics'):args+=['--metrics']
         if self.options.get('chat_template') and self.options['chat_template']!='model_metadata':
             args+=['--chat-template',self.options['chat_template']]
         if 'enable_thinking' in self.options:
@@ -156,7 +165,7 @@ class LlamaBackend:
             raise RuntimeError('TranslateGemma 공식 입력 한도 2K를 초과했습니다.')
         if input_tokens + max_tokens + 256 > self.options['context']:
             raise RuntimeError('문단이 문맥 한도를 초과했습니다. 자동 잘림을 차단했습니다.')
-        pieces = []; finish = None; usage = {}; began = time.monotonic(); first = None
+        pieces = []; finish = None; usage = {}; began = time.monotonic(); first = None;timings={}
         with self.client.stream('POST', '/v1/chat/completions', json=req,
                                 timeout=httpx.Timeout(5, read=30)) as result:
             result.raise_for_status()
@@ -168,6 +177,8 @@ class LlamaBackend:
                     continue
                 event = json.loads(line[6:])
                 usage = event.get('usage') or usage
+                if isinstance(event.get('timings'),dict):
+                    timings={k:v for k,v in event['timings'].items() if k in {'cache_n','prompt_n','prompt_ms','predicted_n','predicted_ms','predicted_per_second'}}
                 for choice in event.get('choices', []):
                     delta = choice.get('delta', {})
                     if delta.get('reasoning_content'):
@@ -182,7 +193,7 @@ class LlamaBackend:
         if '<think' in text.lower() or '</think' in text.lower():
             raise RuntimeError('사고 텍스트가 섞여 번역 채택을 차단했습니다.')
         return dict(text=text, seconds=time.monotonic()-began,
-                    first_token_seconds=(first-began if first else None), usage=usage,input_tokens=input_tokens)
+                    first_token_seconds=(first-began if first else None), usage=usage,input_tokens=input_tokens,server_timings=timings)
 
     def close(self):
         if self.client:

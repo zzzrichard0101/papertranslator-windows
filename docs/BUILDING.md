@@ -69,6 +69,21 @@ OCR 모델과 config.yaml은 PyInstaller의 collect-data로 포함합니다. 빌
 
 ## CI
 
+`acceleration_integration.py`는 합성 worker에서 전체/부분 교정의 최종 결과 일치와 교정 범위 유지,
+잘못된 부분 후보의 전체 교정 복귀·실제 추론 설정 보고·출력 배치·원문 픽셀·캐시 재개를 검사합니다.
+
+GPU가 비었을 때 다음 명령으로 기동 시간을 분리한 합성 비교를 실행할 수 있습니다. 사용자 설정/모델/작업은 변경하지 않습니다.
+다른 worker/추론 엔진이 있으면 거부하며, 비교는 탐욕 디코딩(temperature 0)만 다룹니다. 출력 일치는 의미 정확도 인증이 아닙니다.
+
+```powershell
+uv run python scripts/benchmark_acceleration.py --device gpu --stage generation --model qwen38
+uv run python scripts/benchmark_acceleration.py --device gpu --stage editor --model qwen38 --limit 4
+```
+
+비교는 기동·warmup을 추론 시간에서 제외하고 실제 예측/채택 토큰, 일반/동시/MTP 결과 차이, 교정 복귀를 기록합니다.
+원시 결과는 비공개 `work/acceleration-benchmark`에 저장합니다. 다른 시스템 작업과 열/클럭 변화가 결과에 영향을 줄 수 있습니다.
+명령은 가속 옵션을 자동으로 기본값으로 올리지 않습니다. CPU 경로 확인은 `--device cpu --model hy7b --limit 1 --repeats 1`을 사용합니다.
+
 `structure_integration.py`는 합성 3쪽에서 문장형 표 셀, 2단 본문 읽기/배치, 유일 인용 기반의 부분 재처리,
 원문 면 픽셀·출력 배치·캐시 재개를 CPU 테스트 대역으로 검사합니다. 기존 처리 버전 1 작업의 정책도 유지하는지 검사합니다.
 

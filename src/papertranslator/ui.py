@@ -105,6 +105,16 @@ class Window(QMainWindow):
         self.parallel_choice.setToolTip('2문단 동시는 같은 모델을 공유하며 메모리를 더 사용합니다. GPU별 속도·의미 품질 비교는 미완료입니다. 엔진 시작 실패 시 순차 처리로 재시도합니다.')
         self.parallel_choice.currentIndexChanged.connect(self.quality_changed)
         form.addRow('동시 처리',self.parallel_choice)
+        acceleration_row=QHBoxLayout()
+        self.mtp_choice=QCheckBox('MTP 예측 가속 · 실험')
+        self.mtp_choice.setChecked(self.settings.get('inference_acceleration')=='mtp')
+        self.mtp_choice.setToolTip('확인된 27B 모델의 예측 헤드를 사용합니다. 기존 모델이 예측을 검증합니다. 장비별 속도·출력 비교가 필요하며 시작 실패 시 일반 추론으로 재시도합니다.')
+        self.compact_choice=QCheckBox('교정 구절만 출력 · 실험')
+        self.compact_choice.setChecked(bool(self.settings.get('compact_editor',False)))
+        self.compact_choice.setToolTip('정밀/혼합 모드의 긴 문단 전체를 검토하되 수정 구절만 생성합니다. 원문 근거·중복·겹침·전체 문단 검사를 거쳐 반영하며 실패하면 전체 교정으로 돌아갑니다.')
+        for control in [self.mtp_choice,self.compact_choice]:
+            acceleration_row.addWidget(control);control.toggled.connect(self.quality_changed)
+        form.addRow('실험 가속',acceleration_row)
         row=QHBoxLayout(); self.dest=QLineEdit(self.destination); self.dest.setReadOnly(True); row.addWidget(self.dest)
         self.dest_btn=QPushButton('폴더 선택'); self.dest_btn.setFixedHeight(38); self.dest_btn.clicked.connect(self.pick_destination); row.addWidget(self.dest_btn); form.addRow('결과 저장',row)
         body.addLayout(form)
@@ -162,6 +172,8 @@ class Window(QMainWindow):
         self.folder=None; self.source=None; self.title.clear(); self.page_spec.clear()
         self.layout_choice.setCurrentIndex(max(0,self.layout_choice.findData(self.settings.get('bilingual_layout','source_position'))))
         self.parallel_choice.setCurrentIndex(max(0,self.parallel_choice.findData(self.settings.get('inference_parallel',1))))
+        for control,value in [(self.mtp_choice,self.settings.get('inference_acceleration')=='mtp'),(self.compact_choice,bool(self.settings.get('compact_editor',False)))]:
+            control.blockSignals(True);control.setChecked(value);control.blockSignals(False)
         preferred=self.settings.get('quality_mode','ensemble' if any(k in catalog() for k in ['qwen38','qwen30b']) else 'contextual')
         self.quality_choice.setCurrentIndex(max(0,self.quality_choice.findData(preferred)))
         self.drop.setText('PDF를 여기에 놓거나 클릭해서 선택하세요\n영어 학술 PDF · 로컬 처리'); self.refresh()
@@ -169,7 +181,7 @@ class Window(QMainWindow):
     def start_job(self):
         try:
             if not self.source: raise ValueError('PDF를 먼저 선택하세요.')
-            self.folder=create_job(self.source,self.destination,self.page_spec.text(),self.profile.currentData(),self.title.text(),self.model_choice.currentData(),self.review_choice.isChecked(),ocr_mode=self.ocr_choice.currentData(),quality_mode=self.quality_choice.currentData(),bilingual_layout=self.layout_choice.currentData(),inference_parallel=self.parallel_choice.currentData())
+            self.folder=create_job(self.source,self.destination,self.page_spec.text(),self.profile.currentData(),self.title.text(),self.model_choice.currentData(),self.review_choice.isChecked(),ocr_mode=self.ocr_choice.currentData(),quality_mode=self.quality_choice.currentData(),bilingual_layout=self.layout_choice.currentData(),inference_parallel=self.parallel_choice.currentData(),inference_acceleration='mtp' if self.mtp_choice.isChecked() and self.mtp_choice.isEnabled() else 'none',compact_editor=self.compact_choice.isChecked() and self.compact_choice.isEnabled())
             self.launch()
         except Exception as exc: QMessageBox.warning(self,'시작할 수 없습니다',str(exc))
 
@@ -182,7 +194,10 @@ class Window(QMainWindow):
         self.settings['quality_mode']=self.quality_choice.currentData()
         self.settings['bilingual_layout']=self.layout_choice.currentData()
         self.settings['inference_parallel']=self.parallel_choice.currentData()
+        self.settings['inference_acceleration']='mtp' if self.mtp_choice.isChecked() else 'none'
+        self.settings['compact_editor']=self.compact_choice.isChecked()
         atomic_json(root()/'settings.json',self.settings)
+        self.refresh()
 
     def api_settings(self):
         from .api_dialog import ApiDialog
@@ -232,6 +247,8 @@ class Window(QMainWindow):
         self.parallel_choice.blockSignals(True)
         self.parallel_choice.setCurrentIndex(max(0,self.parallel_choice.findData(state.get('inference_parallel',1))))
         self.parallel_choice.blockSignals(False)
+        for control,value in [(self.mtp_choice,state.get('inference_acceleration')=='mtp'),(self.compact_choice,state.get('quality_policy',{}).get('editor_output')=='patch-v1')]:
+            control.blockSignals(True);control.setChecked(value);control.blockSignals(False)
         self.drop.setText(state.get('source_name','PDF')+'\n저장된 작업'); self.refresh()
 
     def refresh_history(self):
@@ -253,6 +270,11 @@ class Window(QMainWindow):
         if not can_review:self.review_choice.setChecked(False)
         self.model.setText('로컬 모델  '+chosen.get('id','설치 대기')+'  ·  '+chosen.get('status_ko','비교 중 · 의미 검수 필요'))
         for w in [self.drop,self.title,self.page_spec,self.profile,self.model_choice,self.ocr_choice,self.quality_choice,self.layout_choice,self.parallel_choice,self.api_btn,self.dest_btn,self.new_btn,self.history]: w.setEnabled(not active)
+        from .acceleration import capable
+        eligible=[chosen]
+        if self.quality_choice.currentData() in {'ensemble','hybrid'}:eligible+=list(catalog(registry).values())
+        self.mtp_choice.setEnabled(not active and any(capable(m,registry) for m in eligible))
+        self.compact_choice.setEnabled(not active and self.quality_choice.currentData() in {'ensemble','hybrid'})
         self.start.setEnabled(not active and self.source is not None and bool(registry))
         self.cancel_btn.setEnabled(active)
         another_worker=bool(state.get('pid') and psutil.pid_exists(state['pid']))
