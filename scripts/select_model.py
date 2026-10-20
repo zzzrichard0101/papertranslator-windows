@@ -11,7 +11,7 @@ def select(key):
     models.setdefault('hy7b',{**registry['model'],'key':'hy7b','adapter':'hy',
         'options':dict(context=4096,temperature=.7,top_p=.6,top_k=20,min_p=0.,repeat_penalty=1.05,seed=42)})
     if key not in models:raise ValueError('Download this model before selecting it: '+key)
-    labels={'hy7b':'Hy-MT2 7B · 경량 모드','qwen38':'Qwen3.8 27B · 고품질 실험 모드',
+    labels={'hy7b':'Hy-MT2 7B · 경량 모드','hy30b':'Hy-MT2 30B-A3B · 번역 전용 실험 모드','qwen38':'Qwen3.8 27B · 고품질 실험 모드',
             'qwen30b':'Qwen3 30B-A3B · 비교용','translategemma27b':'TranslateGemma 27B · 비교용'}
     for name,model in models.items():
         model['display_name']=labels.get(name,model['id'])
@@ -23,6 +23,6 @@ def select(key):
 
 
 if __name__=='__main__':
-    parser=argparse.ArgumentParser();parser.add_argument('model',choices=['hy7b','qwen38','qwen30b','translategemma27b'])
+    parser=argparse.ArgumentParser();parser.add_argument('model',choices=['hy7b','hy30b','qwen38','qwen30b','translategemma27b'])
     select(parser.parse_args().model)
     print('Selected installed model. Existing jobs keep their saved model.')

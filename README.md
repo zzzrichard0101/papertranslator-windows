@@ -43,6 +43,18 @@ uv run python scripts/select_model.py qwen38
 추가 비교 모델 두 개는 `scripts/fetch_candidates.py`로 설치할 수 있습니다(약 36GB 추가).
 TranslateGemma에는 별도 Gemma 이용 조건이 적용됩니다. 번역 모델 가중치는 이 저장소와 릴리스에 포함하지 않습니다.
 
+번역 전용 MoE 후보인 [Hy-MT2 30B-A3B](https://huggingface.co/tencent/Hy-MT2-30B-A3B-GGUF)도 선택 설치할 수 있습니다.
+공식 Q4_K_M 파일 약 18.24GB를 내려받아 SHA256을 확인합니다. RTX 4090 24GB에서 실행을 확인했으며,
+아직 독립 의미 평가를 마치지 않은 실험 후보입니다. 설치는 기존 기본 모델과 진행 중인 작업을 바꾸지 않습니다.
+
+```powershell
+uv run python scripts/fetch_hy30.py
+# 설치 후 앱을 다시 열어 모델 목록에서 선택합니다.
+```
+
+정밀 교정에서는 이 후보의 초벌을 Qwen 27B가 원문과 대조하며, 별도 Hy 7B 보완 번역 단계는 없습니다.
+Qwen 교정 모델이 설치되어 있어야 합니다. 작은 비교의 시간과 남은 오류는 [모델 평가](docs/EVALUATION.md)에 기록했습니다.
+
 ## 사용법
 
 1. PDF를 선택하거나 드롭합니다.
@@ -149,6 +161,9 @@ uv run python scripts/audit_public.py
 
 GPU 통합 시험과 Windows 실행 파일 빌드는 [개발·빌드 안내](docs/BUILDING.md)를 확인하세요.
 개발 시 얻은 비교 결과와 검증 한계는 [모델 평가](docs/EVALUATION.md)에 기록했습니다.
+설치된 모델 조합은 `uv run python scripts/benchmark_free_pipelines.py`로 같은 합성 문단에 비교할 수 있습니다.
+진행 중인 GPU 작업과 충돌하면 실행을 거부하며, API 호출·모델 다운로드·기본 설정 변경은 하지 않습니다.
+모델 적재와 실제 처리 시간을 분리하고, 자동 검사 결과와 별도로 의미 대조용 번역을 로컬 `work`에 남깁니다.
 남은 기능은 [개발 현황](DEVELOPMENT.txt)에 있습니다.
 
 ## 라이선스

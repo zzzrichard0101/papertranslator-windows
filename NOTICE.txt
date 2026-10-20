@@ -66,6 +66,7 @@ Separately downloaded inference components (not included in the app archive):
 llama.cpp b11718: MIT. https://github.com/ggml-org/llama.cpp/releases/tag/b11718
 NVIDIA CUDA runtime binaries: NVIDIA's license terms apply.
 Hy-MT2-7B-GGUF: Apache-2.0. https://huggingface.co/tencent/Hy-MT2-7B-GGUF
+Hy-MT2-30B-A3B-GGUF: Apache-2.0. https://huggingface.co/tencent/Hy-MT2-30B-A3B-GGUF
 Qwen3 30B-A3B Instruct: Apache-2.0. https://ollama.com/library/qwen3
 Qwen3.8 27B: Apache-2.0. https://ollama.com/library/qwen3.8
 TranslateGemma 27B: Gemma Terms of Use. https://ollama.com/library/translategemma

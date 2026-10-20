@@ -28,6 +28,26 @@ API 키 없이 모의 응답의 가격/라우팅/오류 처리는 검증했지�
 대안으로 Groq에도 무료 할당량이 있으나 계정별 한도가 있으며 이 버전에는 별도 연결하지 않았습니다.
 Gemini 무료 계층은 콘텐츠의 제품 개선 사용 조건을 확인해야 합니다.
 
+2026-10-20 공식 문서와 공개 모델 목록을 다시 확인했습니다. 아래는 연결/평가 후보이며,
+현재 앱의 OpenRouter 키 입력란에 다른 제공자의 키를 넣어 사용할 수는 없습니다.
+
+| 경로 | 현재 확인한 무료 수단 | 적용 후보와 한계 |
+| --- | --- | --- |
+| Groq Free Plan | Qwen3.8 27B, 표기 한도 30요청/분·1,000요청/일·8,000토큰/분·200,000토큰/일 | 로컬과 작업 분담. 같은 계열 모델이므로 독립 의미 검수 효과는 별도 비교 필요. 정확한 한도는 계정 화면에서 확인 |
+| Gemini Free Tier | Gemini 3.8 Flash의 기본 텍스트 입력/출력 무료 | 다른 계열의 의미 검수 후보. 모델·계정별 할당량 확인과 콘텐츠의 제품 개선 사용 조건 동의 필요 |
+| OpenRouter :free | 공개 목록에서 Nemotron 3 Super 120B 등 입력/출력 0원 확인 | 현재 연결을 활용할 수 있으나 스키마·비수집 경로 가용성과 실제 한국어 품질은 미검증 |
+
+Groq의 공개 450토큰/초 표기는 제공자 수치이며, 이 앱에서 측정한 속도가 아닙니다.
+짧은 응답이 빨라도 분당 토큰 한도 때문에 지속 처리량은 낮아질 수 있습니다.
+무료 한도가 소진되면 로컬 처리로 남은 일을 수행하는 방식이 필요하며 유료 업그레이드/대체는 제외합니다.
+현재 API 키가 없어 실제 외부 번역 요청은 수행하지 않았습니다.
+
+Cerebras의 현재 제공은 결제 수단 등록이 필요한 30일/$5 체험이며 상시 무료 계층이 없다고 명시되어 있어,
+지속적으로 무료인 수단을 찾는 이번 후보에서는 제외했습니다.
+
 - [Groq 공식 한도](https://console.groq.com/docs/rate-limits)
 - [Groq 데이터 정책](https://console.groq.com/docs/your-data)
 - [Gemini 공식 가격·데이터 조건](https://ai.google.dev/gemini-api/docs/pricing)
+- [Gemini 공식 한도](https://ai.google.dev/gemini-api/docs/rate-limits)
+- [Groq 지원 모델·제공자 속도 표기](https://console.groq.com/docs/models)
+- [Cerebras 현재 체험 조건](https://inference-docs.cerebras.ai/support/rate-limits)
