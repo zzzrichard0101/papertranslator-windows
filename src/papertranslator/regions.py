@@ -45,11 +45,21 @@ def table_regions(page,scanned=False):
     return regions
 
 
-def separate_tables(page,blocks,scanned=False):
+def combine_words(line,items):
+    items=sorted(items,key=lambda w:w['bbox'][0]);boxes=[w['bbox'] for w in items]
+    box=[min(b[0] for b in boxes),min(b[1] for b in boxes),max(b[2] for b in boxes),max(b[3] for b in boxes)]
+    return {**line,'bbox':box,'layout_words':copy.deepcopy(items),
+            'spans':[{**line['spans'][0],'text':' '.join(w['text'] for w in items),'bbox':box}]}
+
+
+def separate_tables(page,blocks,scanned=False,structured=False):
     if any(l.get('rotation') or l.get('diagram_label') or l.get('layout_kind') for b in blocks for l in b.get('lines',[])):return blocks,[],[]
     regions=table_regions(page,scanned)
     if not regions:regions=borderless_numeric_table(page,blocks)
     if not regions:regions=borderless_comparison_table(page,blocks)
+    if not regions and structured:
+        from .structure import prose_tables
+        regions=prose_tables(page,blocks)
     cells=[]
     for table_index,table in enumerate(regions):
         for cell_index,box in enumerate(table['cells']):
@@ -68,12 +78,8 @@ def separate_tables(page,blocks,scanned=False):
                     matches=[i for i,c in enumerate(cells) if fitz.Rect(c['bbox']).contains(center)]
                     if len(matches)==1:buckets.setdefault(matches[0],[]).append(word)
                     else:outside.append(word)
-                def combine(items):
-                    items=sorted(items,key=lambda w:w['bbox'][0]);boxes=[w['bbox'] for w in items]
-                    box=[min(b[0] for b in boxes),min(b[1] for b in boxes),max(b[2] for b in boxes),max(b[3] for b in boxes)]
-                    return {**line,'bbox':box,'layout_words':items,'spans':[{**line['spans'][0],'text':' '.join(w['text'] for w in items),'bbox':box}]}
-                for i,items in buckets.items():cells[i]['lines'].append(combine(items))
-                if outside:kept.append(combine(outside))
+                for i,items in buckets.items():cells[i]['lines'].append(combine_words(line,items))
+                if outside:kept.append(combine_words(line,outside))
                 continue
             rect=fitz.Rect(line['bbox'])
             matches=[c for c in cells if fitz.Rect(c['bbox']).contains((rect.tl+rect.br)/2) and

@@ -39,6 +39,32 @@ def translate_record(backend,block,profile,adapter,folder,memory=None):
     text,mapping=protect(block['source']);base=make_prompt(text,mapping,profile,adapter,context=block.get('context'))
     # Specialist templates receive only their documented translation contract.
     for attempt in range(1 if adapter=='translategemma' else 2):
+        if attempt and block.get('selective_repair') and record.get('candidate'):
+            from .sentence_repair import plan,splice,VERSION as REPAIR_VERSION
+            window=plan(block['source'],record['candidate'],record['issues'])
+            if window:
+                repair=dict(version=REPAIR_VERSION,window=window,status='attempted',human_approved=False)
+                record['sentence_repair']=repair;record['attempts']+=1
+                try:
+                    local={**block,'id':block['id']+'-sentence-repair','source':window['source']}
+                    context={**block.get('context',{}),'before':block['source'][:window['source_start']][-220:],
+                             'after':block['source'][window['source_end']:][:220]}
+                    masked,protected=protect(local['source'])
+                    prompt=make_prompt(masked,protected,profile,adapter,context=context)
+                    prompt=('Translate only this source sentence again. Correct the validation failures: '+
+                            '; '.join(i['code'] for i in record['issues'])+'. Do not translate the neighbouring context.\n\n'+prompt)
+                    raw,candidate,local_issues=generation(backend,local,prompt,protected,profile,adapter,memory,
+                                                        min(1800,max(512,len(local['source'])*2)))
+                    atomic_json(folder/'responses'/(local['id']+'.json'),raw)
+                    record['seconds']+=raw['seconds']
+                    if blocking(local_issues):raise ValueError('부분 교정 문장 검사 미통과')
+                    target=splice(block['source'],record['candidate'],window,candidate)
+                    repair.update(status='accepted',previous_candidate=record['candidate'])
+                    record.update(target=target,candidate=target,issues=check(block['source'],target),status='translated')
+                    return record
+                except Cancelled:raise
+                except Exception as exc:
+                    repair.update(status='rejected',reason=str(exc)[:300])
         prompt=base
         if attempt:
             prompt=('The previous translation failed automatic validation. Translate the source again faithfully. '
@@ -47,7 +73,7 @@ def translate_record(backend,block,profile,adapter,folder,memory=None):
                     'do not invent facts. Output only the translation. '
                     'Correct these validation failures: '+
                     '; '.join(i['code']+': '+i.get('message','')[:100] for i in record['issues'][:2])[:300]+'\n\n'+base)
-        record['attempts']=attempt+1
+        record['attempts']+=1
         try:
             result,target,issues=generation(backend,block,prompt,mapping,profile,adapter,memory,
                                             1800 if backend.options['context']==4096 else 2200)

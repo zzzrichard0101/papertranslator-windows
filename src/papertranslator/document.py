@@ -68,6 +68,8 @@ def paragraph_units(page, text_blocks=None):
               max(l['bbox'][2] for l in current),max(l['bbox'][3] for l in current)]
         spans=[s for l in current for s in l['spans']]
         units.append(dict(source=text,raw_source=raw,bbox=bbox,layout_lines=layout_lines,kind=current[0]['kind'],preserve=False,style_runs=spans,rotation=current[0].get('rotation',0),region_bbox=current[0].get('region_bbox'),erase_patch=current[0].get('erase_patch')))
+        if current[0].get('flow_order') is not None:
+            units[-1]['flow_order']=current[0]['flow_order']
         current=[]
     for block in (page.get_text('dict',sort=True)['blocks'] if text_blocks is None else text_blocks):
         if block['type']!=0:continue
@@ -80,6 +82,7 @@ def paragraph_units(page, text_blocks=None):
             flush();previous=None
             units.append(dict(source=text,bbox=list(block['bbox']),kind='page_marker' if marker else 'protected',
                               preserve=True,preserve_reason='page_number' if marker else region,style_runs=spans))
+            if block.get('flow_order') is not None:units[-1]['flow_order']=block['flow_order']
             continue
         for line in block['lines']:
             spans=line['spans'];text=''.join(s['text'] for s in spans)
@@ -110,8 +113,8 @@ def paragraph_units(page, text_blocks=None):
                 inset=line['bbox'][0]-left
                 indented=(width>150 and 4<inset<35 and previous['bbox'][2]-previous['bbox'][0]<width*.95 and
                           bool(re.search(r'[.!?][\"\x27’”)]*\s*$',current[-1]['text'])))
-            if current and (kind!=current[0]['kind'] or heading or bullet or gap or column_jump or indented or (current[-1]['text'].rstrip().endswith(';') and len(current[-1]['text'])<100 and len(text)<100)):flush()
-            current.append(dict(text=text,bbox=line['bbox'],spans=spans,kind=kind,rotation=rotation,region_bbox=line.get('region_bbox'),erase_patch=line.get('erase_patch')));previous=line
+            if current and (line.get('flow_group')!=current[0].get('flow_group') or kind!=current[0]['kind'] or heading or bullet or gap or column_jump or indented or (current[-1]['text'].rstrip().endswith(';') and len(current[-1]['text'])<100 and len(text)<100)):flush()
+            current.append(dict(text=text,bbox=line['bbox'],spans=spans,kind=kind,rotation=rotation,region_bbox=line.get('region_bbox'),erase_patch=line.get('erase_patch'),flow_order=line.get('flow_order'),flow_group=line.get('flow_group')));previous=line
             if isolated:flush();previous=None
     flush()
     return units
@@ -152,7 +155,7 @@ def segments(text, limit=1800):
     return result
 
 
-def analyze(source, selected, progress=lambda *_: None, ocr_mode='auto', cancel=lambda: False, ocr_engine=None,cache_dir=None,recovery=False):
+def analyze(source, selected, progress=lambda *_: None, ocr_mode='auto', cancel=lambda: False, ocr_engine=None,cache_dir=None,recovery=False,structured=False):
     doc = fitz.open(source); pages = []; blocks = []; extracted=[]
     engine=ocr_engine
     def recognize(pixels):
@@ -188,7 +191,7 @@ def analyze(source, selected, progress=lambda *_: None, ocr_mode='auto', cancel=
                     else:ordered.extend(dict(type=0,bbox=line['bbox'],lines=[line],
                         reading_top=line.get('reading_top',line['bbox'][1])) for line in block['lines'])
                 text_blocks=sorted(ordered,key=lambda b:(b.get('reading_top',b['bbox'][1]),b['bbox'][0]))
-            body_blocks,table_cells,regions=separate_tables(page,text_blocks,scanned=bool(extraction['lines']))
+            body_blocks,table_cells,regions=separate_tables(page,text_blocks,scanned=bool(extraction['lines']),structured=structured)
             page_info['table_regions']=regions
             # Captions are independent translation units even when OCR supplies
             # no bold font. Include the adjacent title on the same printed row.
@@ -204,6 +207,10 @@ def analyze(source, selected, progress=lambda *_: None, ocr_mode='auto', cancel=
                 body_blocks=join_fragments(body_blocks)
                 page_info['ocr']['reconstructed_fragments']=sum(
                     max(0,l.get('reconstructed_fragments',1)-1) for b in body_blocks for l in b.get('lines',[]))
+            if structured and not regions:
+                from .structure import two_columns
+                body_blocks,column_info=two_columns(page,body_blocks)
+                if column_info:page_info['reading_columns']=column_info
             units=paragraph_units(page,body_blocks)
             for cell in table_cells:
                 cell_blocks=[dict(type=0,lines=cell['lines'],bbox=cell['bbox'])]
@@ -215,7 +222,7 @@ def analyze(source, selected, progress=lambda *_: None, ocr_mode='auto', cancel=
                     region=protected_kind(unit['source'],unit['style_runs'])
                     if region:unit.update(preserve=True,preserve_reason='table_'+region)
                     units.append(unit)
-            units.sort(key=lambda u:(u['bbox'][1],u['bbox'][0]))
+            units.sort(key=lambda u:(u.get('flow_order',u['bbox'][1]),u['bbox'][0]))
             for unit in units:
                 unit['source_page_index']=index
                 if unit['bbox'][1]>page.rect.height*.94 and len(unit['source'])<=20:
@@ -472,6 +479,10 @@ def export(ir, records, original, folder, title, job, cancel=lambda: False):
                          added_lines=sum(p.get('ocr',{}).get('recovery',{}).get('added_lines',0) for p in ir['pages']),
                          reconstructed_fragments=sum(p.get('ocr',{}).get('reconstructed_fragments',0) for p in ir['pages'])),
                      terminology_version=ir.get('terminology',{}).get('version'),
+                     reading_column_pages=sum(bool(p.get('reading_columns')) for p in ir['pages']),
+                     prose_table_regions=sum(t.get('method')=='captioned_prose_columns' for p in ir['pages'] for t in p.get('table_regions',[])),
+                     sentence_repair_attempted_paragraphs=sum(bool(r.get('sentence_repair')) for r in records.values()),
+                     sentence_repair_accepted_paragraphs=sum(r.get('sentence_repair',{}).get('status')=='accepted' for r in records.values()),
                      ocr_unscored_lines=sum(p.get('ocr',{}).get('unscored_lines',0) for p in ir['pages']),
                      ocr_low_confidence_lines=sum(p.get('ocr',{}).get('low_confidence_lines',0) for p in ir['pages']),
                      needs_review=True, file_generation='completed', semantic_review=review_status,

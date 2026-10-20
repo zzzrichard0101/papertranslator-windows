@@ -54,7 +54,7 @@ def create_job(source, destination, page_spec='', profile='general', title='',mo
     state['inference_parallel']=inference_parallel
     if inference_parallel==2:state['model']['options']={**state['model'].get('options',{}),'parallel':2}
     state['quality_policy']=policy(quality_mode,state['model'],read_json(root()/'model_registry.json',{}))
-    state['processing_revision']=1
+    state['processing_revision']=2
     if cloud:state['quality_policy']['cloud']={k:cloud[k] for k in ['enabled','model','max_requests']}
     state['ocr_mode']=ocr_mode
     state['bilingual_layout']=bilingual_layout
@@ -111,14 +111,21 @@ def _run(folder, retry_failed):
             selected=pages(state['page_spec'],len(doc)); total_pages=len(doc)
         save('analyzing','PDF 구조 분석',source_sha256=sha256(original),total_pages=total_pages,selected=selected)
         upgraded=state.get('processing_revision',0)>=1
-        ir,analysis_hit=get_analysis(folder,dict(source_sha256=state['source_sha256'],selected=selected,
-            parser=PARSER,ocr=signature(state.get('ocr_mode','off'),recovery=upgraded)),
+        structured=state.get('processing_revision',0)>=2
+        analysis_identity=dict(source_sha256=state['source_sha256'],selected=selected,
+            parser=PARSER,ocr=signature(state.get('ocr_mode','off'),recovery=upgraded))
+        if structured:
+            from .structure import VERSION as STRUCTURE_VERSION
+            analysis_identity['structure']=STRUCTURE_VERSION
+        ir,analysis_hit=get_analysis(folder,analysis_identity,
             lambda:analyze(original,selected,lambda p:save(stage='PDF 분석 · 필요 시 로컬 OCR',current_source_page=p),
-                ocr_mode=state.get('ocr_mode','off'),cancel=cancel,cache_dir=folder/'ocr-cache',recovery=upgraded),cancel)
+                ocr_mode=state.get('ocr_mode','off'),cancel=cancel,cache_dir=folder/'ocr-cache',recovery=upgraded,structured=structured),cancel)
         save(analysis_cache_hit=analysis_hit)
         quality_policy=state.get('quality_policy',{'mode':'legacy'})
         if quality_policy['mode']!='legacy':attach_context(ir,state['title'],state['profile'],document_terms=upgraded)
         if ir.get('terminology'):atomic_json(folder/'Terminology.json',ir['terminology'])
+        if structured:
+            for block in ir['blocks']:block['selective_repair']=True
         atomic_json(folder/'ir.json',ir)
         registry=read_json(root()/'model_registry.json')
         if not registry: raise RuntimeError('모델 설치가 아직 완료되지 않았습니다.')
@@ -130,6 +137,9 @@ def _run(folder, retry_failed):
         if upgraded:
             from .terminology import VERSION as TERMS_VERSION
             identity['processing']=dict(revision=state['processing_revision'],terminology=TERMS_VERSION)
+            if structured:
+                from .sentence_repair import VERSION as REPAIR_VERSION
+                identity['processing'].update(structure=STRUCTURE_VERSION,repair=REPAIR_VERSION)
         stamp=fingerprint(identity)
         journal=Checkpoint(folder,stamp)
         records=journal.load()
