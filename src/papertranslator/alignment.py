@@ -1,6 +1,7 @@
 """Map an unchanged complete translation to its physical source pages."""
 import json,re
 from .backend import Cancelled
+from .checkpoint import persist
 from .storage import atomic_json,fingerprint
 
 VERSION='source-page-alignment-6-boundary-sentence'
@@ -100,4 +101,4 @@ def run(records,model,folder,backend_factory,save,progress,cancel):
                 result.update(parts=mapped,status=status,proposal=proposal,requires_review=True)
             except Cancelled:raise
             except Exception as exc:result['reason']=str(exc)[:300]
-            record['page_alignment']=result;save()
+            record['page_alignment']=result;persist(save,record)

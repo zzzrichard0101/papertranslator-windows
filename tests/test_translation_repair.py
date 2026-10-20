@@ -32,6 +32,7 @@ def test_persistent_sign_error_is_not_silently_accepted(tmp_path):
     result=translate_record(engine,block(source),'general','qwen',tmp_path)
     assert len(engine.prompts)==2 and result['status']=='failed'
     assert result['target']==source and result['candidate']=='값은 2.4였다.'
+    assert 'numbers:' in engine.prompts[1]
 
 
 def test_cancellation_is_not_retried(tmp_path):

@@ -8,6 +8,7 @@ import secrets
 import socket
 import subprocess
 import time
+import threading
 
 import httpx
 
@@ -64,12 +65,29 @@ class LlamaBackend:
         self.model = model or self.registry['model']
         self.key = secrets.token_urlsafe(32)
         self.options = options_for(self.model)
+        self.stop_event = threading.Event()
+
+    def abort(self):
+        self.stop_event.set()
 
     def check(self):
-        if self.cancel():
+        if self.cancel() or self.stop_event.is_set():
             raise Cancelled()
 
     def start(self, progress=lambda _: None):
+        try:
+            return self._start(progress)
+        except Cancelled:
+            raise
+        except Exception:
+            if self.options['parallel']!=2:raise
+            self.close()
+            self.options['parallel']=1
+            self.log_name=Path(self.log_name).stem+'-sequential.log'
+            progress('동시 처리 엔진 시작 실패 · 순차 처리로 재시도')
+            return self._start(progress)
+
+    def _start(self, progress=lambda _: None):
         self.check()
         path = Path(self.model['path'])
         if not path.is_file() or sha256(path) != self.model['sha256']:
@@ -82,9 +100,9 @@ class LlamaBackend:
             s.bind(('127.0.0.1', 0)); self.port = s.getsockname()[1]
         self.job = OwnedJob()
         self.log = (self.folder/self.log_name).open('w', encoding='utf-8')
-        env = os.environ.copy(); env['CUDA_VISIBLE_DEVICES'] = '0'
+        env = os.environ.copy(); env['CUDA_VISIBLE_DEVICES'] = '' if self.options['gpu_layers']==0 else '0'
         args = [str(exe), '-m', str(path), '--host', '127.0.0.1', '--port', str(self.port),
-                '--api-key', self.key, '-ngl', str(self.options['gpu_layers']), '-c', str(self.options['context']),
+                '--api-key', self.key, '-ngl', str(self.options['gpu_layers']), '-c', str(self.options['context']*self.options['parallel']),
                 '-np', str(self.options['parallel']), '-t', str(self.options['threads']),
                 '-ctk',self.options['kv'],'-ctv',self.options['kv'],'-fa',self.options['flash_attention'],
                 '--no-webui', '--jinja', '--no-context-shift','--offline']

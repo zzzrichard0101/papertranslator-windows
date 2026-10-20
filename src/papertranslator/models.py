@@ -25,7 +25,7 @@ def resolve_model(key=None,registry=None):
 def options_for(model):
     options={**DEFAULT_OPTIONS,**model.get('options',{})}
     if model.get('adapter')=='translategemma':options['chat_template']='model_metadata'
-    if options['context'] not in {4096,8192,16384} or options['parallel']!=1:
+    if options['context'] not in {4096,8192,16384} or options['parallel'] not in {1,2}:
         raise ValueError('검증되지 않은 문맥/병렬 설정')
     if options['kv'] not in {'f16','q8_0'} or options['flash_attention'] not in {'on','off','auto'}:
         raise ValueError('지원하지 않는 KV/Flash Attention 설정')

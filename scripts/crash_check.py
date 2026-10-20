@@ -6,6 +6,7 @@ import time
 import psutil
 
 from papertranslator.jobs import create_job
+from papertranslator.checkpoint import read_checkpoint, Checkpoint
 from papertranslator.storage import atomic_json, read_json
 
 project=Path(__file__).resolve().parents[1]
@@ -25,7 +26,7 @@ for _ in range(100):
     if not any(psutil.pid_exists(pid) for pid in engines): break
     time.sleep(.05)
 assert not any(psutil.pid_exists(pid) for pid in engines), 'Owned engine leaked'
-checkpoint=read_json(folder/'checkpoint.json')
+checkpoint=read_checkpoint(folder)
 subprocess.run(command,check=True,timeout=120)
 state=read_json(folder/'state.json')
 assert state['status']=='completed_with_warnings' and state['cache_hits']>=len(checkpoint['records'])

@@ -11,6 +11,7 @@ uv run python scripts/audit_public.py
 uv run python scripts/eta_integration.py
 uv run python scripts/quality_integration.py
 uv run python scripts/layout_integration.py
+uv run python scripts/performance_integration.py
 ```
 
 `audit_public.py`는 Git index의 실제 파일 내용을 검사하므로 변경 사항을 stage한 뒤 실행하세요.
@@ -67,6 +68,12 @@ OCR 모델과 config.yaml은 PyInstaller의 collect-data로 포함합니다. 빌
 모델 다운로드 GUI와 완전 자동 설치 프로그램은 아직 없습니다.
 
 ## CI
+
+`performance_integration.py`는 동일 합성 PDF의 순차/2문단 동시 처리에서 번역·배치·원문 픽셀 보존,
+동일 입력 캐시와 모델 호출 없는 재개를 CPU 테스트 대역으로 비교합니다. GPU 속도 측정은 아닙니다.
+`performance_engine_integration.py --exe dist/PaperTranslator/PaperTranslator.exe`는 설치된 Hy-MT2를
+GPU 적재 0, CPU 4스레드와 별도 데이터 루트로 실행해 합성 2쪽의 native/스캔 OCR·캐시·DB 저장·재개를 검사합니다.
+진행 중인 GPU 작업을 중단하거나 그 작업의 설정·기록을 수정하지 않습니다. 이 작은 실행 검사는 의미 정확도 인증이 아닙니다.
 
 Windows CI는 Python 3.12 단위 검사와 공개 파일 검사를 실행합니다.
 수동 실행은 Windows 앱을 빌드해 아티팩트로 올립니다. CI에서는 GPU/의미 정확도 검사를 수행하지 않습니다.

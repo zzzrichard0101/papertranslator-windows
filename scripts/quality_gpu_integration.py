@@ -13,6 +13,7 @@ import sys
 import pymupdf as fitz
 
 from papertranslator.jobs import create_job
+from papertranslator.checkpoint import read_checkpoint, Checkpoint
 from papertranslator.storage import atomic_json,read_json,root,sha256
 from papertranslator.quality import check
 
@@ -47,11 +48,11 @@ def main():
     assert any('(Example and Writer, 2015)' in r['target'] for r in quality['records'])
     assert sha256(Path(state['output'])/'Original.pdf')==sha256(source)
     # A deliberate, documented test corruption forces the correction path.
-    checkpoint=read_json(folder/'checkpoint.json')
+    checkpoint=read_checkpoint(folder)
     record=next(r for r in checkpoint['records'].values() if r['source'].startswith('Research evidence'))
     bad='연구 근거는 임상 판단을 대체한다. 임상가는 자신의 교육과 경험, 각 내담자의 필요와 함께 근거를 고려해야 한다.'
     record.update(target=bad,candidate=bad,issues=check(record['source'],bad));record.pop('refinement',None)
-    atomic_json(folder/'checkpoint.json',checkpoint)
+    store=Checkpoint(folder,checkpoint['fingerprint']);store.put(record);store.snapshot();store.close()
     subprocess.run(command,check=True,timeout=180)
     replay=read_json(folder/'state.json');assert replay['status']=='completed_with_warnings',replay.get('error')
     assert replay['cache_hits']==4

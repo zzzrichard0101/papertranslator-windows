@@ -1,8 +1,11 @@
 """Source-grounded editing; machine revisions are never human approval."""
 import copy
 import json
+from contextlib import closing
 
 from .backend import Cancelled
+from .checkpoint import persist
+from .inference import completed,parallel_model,slots
 from .models import catalog
 from .quality import check, PROTECTED, relevant_terms
 from .storage import atomic_json, fingerprint
@@ -94,7 +97,43 @@ def edit(backend,source,draft,alternative='',context=None,response_sink=None,rej
     return validate_edit(json.loads(raw['text']),source,draft),raw
 
 
-def run(records,ir,settings,folder,profile,backend_factory,save_checkpoint,progress,cancel):
+def edit_record(backend,record,block,settings,stamp,folder,cancel):
+    record=copy.deepcopy(record)
+    draft=record.get('candidate') if record['status']=='failed' else record['target']
+    draft=draft or record['target']
+    alternative=record.get('alternative',{}).get('candidate','')
+    result=dict(policy=stamp,version=VERSION,draft=draft,accepted=False,editor=settings['editor']['id'])
+    try:
+        rejection='';result['attempts']=[]
+        for attempt in range(3):
+            if cancel():raise Cancelled()
+            try:
+                suffix='' if not attempt else f'-attempt{attempt+1}'
+                value,raw=edit(backend,record['source'],draft,alternative,block.get('context'),
+                    lambda raw:atomic_json(folder/'responses'/('edit-'+record['id']+suffix+'.json'),raw),rejection=rejection)
+                result['attempts'].append(dict(attempt=attempt+1,decision=value['decision']))
+                break
+            except Cancelled:raise
+            except Exception as exc:
+                rejection=str(exc)[:300];result['attempts'].append(dict(attempt=attempt+1,error=rejection))
+                if attempt==2:raise
+        result.update(value)
+        if value['decision']=='revise':
+            target=value['revision'].strip()
+            warnings=[i for i in record.get('issues',[]) if i['code'].startswith('ocr_')]
+            record.update(target=target,candidate=target,status='translated',issues=check(record['source'],target)+warnings)
+            result['accepted']=True
+        elif value['decision']=='uncertain':
+            record['issues'].append(dict(code='edit_uncertain',severity='major',message='교정 모델이 원문/번역을 확정하지 못했습니다. 원문 확인이 필요합니다.'))
+    except Cancelled:raise
+    except Exception as exc:
+        result.update(decision='uncertain',error=str(exc)[:300])
+        record['issues'].append(dict(code='edit_unvalidated',severity='major',message='교정 후보를 검증하지 못해 기존 번역을 유지했습니다.'))
+    record['refinement']=result
+    return record
+
+
+def run(records,ir,settings,folder,profile,backend_factory,save_checkpoint,progress,cancel,workers=1):
     if settings.get('mode') not in {'ensemble','hybrid'}:return
     stamp=fingerprint(settings);blocks={b['id']:b for b in ir['blocks']}
     pending=[r for r in records.values() if r['status']!='preserved' and
@@ -102,50 +141,24 @@ def run(records,ir,settings,folder,profile,backend_factory,save_checkpoint,progr
              r.get('refinement',{}).get('policy')!=stamp]
     auxiliary=settings.get('auxiliary')
     if auxiliary and pending:
-        with backend_factory(folder,cancel,model=auxiliary,log_name='alternative-engine.log') as backend:
+        with backend_factory(folder,cancel,model=parallel_model(auxiliary,workers),log_name='alternative-engine.log') as backend:
             needed=[r for r in pending if r.get('alternative_policy')!=stamp]
             if needed:backend.start(lambda message:progress('보완 번역 · '+message))
-            for index,record in enumerate(needed):
-                if cancel():raise Cancelled()
-                progress(f'보완 모델 번역 {index+1}/{len(needed)}')
+            def alternative(record):
                 block={**blocks[record['id']],'id':'alternative-'+record['id']}
-                record['alternative']=translate_record(backend,block,profile,auxiliary.get('adapter','hy'),folder)
-                record['alternative_policy']=stamp;save_checkpoint()
+                return translate_record(backend,block,profile,auxiliary.get('adapter','hy'),folder,
+                    memory=save_checkpoint if hasattr(save_checkpoint,'get_response') else None)
+            with closing(completed(needed,alternative,slots(backend),cancel,getattr(backend,'abort',lambda:None))) as results:
+                for index,(record,value) in enumerate(results):
+                    record['alternative']=value;record['alternative_policy']=stamp
+                    persist(save_checkpoint,record)
+                    progress(f'보완 모델 번역 {index+1}/{len(needed)}')
     if not pending:return
-    with backend_factory(folder,cancel,model=settings['editor'],log_name='editor-engine.log') as backend:
+    with backend_factory(folder,cancel,model=parallel_model(settings['editor'],workers),log_name='editor-engine.log') as backend:
         backend.start(lambda message:progress('원문 대조 교정 · '+message))
-        for index,record in enumerate(pending):
-            if cancel():raise Cancelled()
-            progress(f'원문 대조 교정 {index+1}/{len(pending)}')
-            draft=record.get('candidate') if record['status']=='failed' else record['target']
-            draft=draft or record['target']
-            alternative=record.get('alternative',{}).get('candidate','')
-            result=dict(policy=stamp,version=VERSION,draft=draft,accepted=False,editor=settings['editor']['id'])
-            try:
-                rejection='';result['attempts']=[]
-                for attempt in range(3):
-                    if cancel():raise Cancelled()
-                    try:
-                        suffix='' if not attempt else f'-attempt{attempt+1}'
-                        value,raw=edit(backend,record['source'],draft,alternative,blocks[record['id']].get('context'),
-                            lambda raw:atomic_json(folder/'responses'/('edit-'+record['id']+suffix+'.json'),raw),rejection=rejection)
-                        result['attempts'].append(dict(attempt=attempt+1,decision=value['decision']))
-                        break
-                    except Cancelled:raise
-                    except Exception as exc:
-                        rejection=str(exc)[:300];result['attempts'].append(dict(attempt=attempt+1,error=rejection))
-                        if attempt==2:raise
-                        progress(f'교정 후보 재검사 {index+1}/{len(pending)} · {attempt+2}/3')
-                result.update(value)
-                if value['decision']=='revise':
-                    target=value['revision'].strip()
-                    warnings=[i for i in record.get('issues',[]) if i['code'].startswith('ocr_')]
-                    record.update(target=target,candidate=target,status='translated',issues=check(record['source'],target)+warnings)
-                    result['accepted']=True
-                elif value['decision']=='uncertain':
-                    record['issues'].append(dict(code='edit_uncertain',severity='major',message='교정 모델이 원문/번역을 확정하지 못했습니다. 원문 확인이 필요합니다.'))
-            except Cancelled:raise
-            except Exception as exc:
-                result.update(decision='uncertain',error=str(exc)[:300])
-                record['issues'].append(dict(code='edit_unvalidated',severity='major',message='교정 후보를 검증하지 못해 기존 번역을 유지했습니다.'))
-            record['refinement']=result;save_checkpoint()
+        def refine(record):return edit_record(backend,record,blocks[record['id']],settings,stamp,folder,cancel)
+        with closing(completed(pending,refine,slots(backend),cancel,getattr(backend,'abort',lambda:None))) as results:
+            for index,(record,value) in enumerate(results):
+                record.clear();record.update(value)
+                persist(save_checkpoint,record)
+                progress(f'원문 대조 교정 {index+1}/{len(pending)}')

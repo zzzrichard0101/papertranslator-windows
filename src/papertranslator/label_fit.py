@@ -5,6 +5,7 @@ from .layout import wrap
 from .refinement import SCHEMA,validate_edit
 from .storage import atomic_json
 from .backend import Cancelled
+from .checkpoint import persist
 
 
 def fits(record,target=None):
@@ -48,4 +49,4 @@ def run(records,model,folder,backend_factory,save,progress,cancel):
                     elif value['decision']=='uncertain':break
                 except Cancelled:raise
                 except Exception as exc:history['attempts'].append(dict(error=str(exc)[:200]))
-                save()
+                persist(save,record)

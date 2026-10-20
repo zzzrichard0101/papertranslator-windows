@@ -98,6 +98,13 @@ class Window(QMainWindow):
         self.layout_choice.setCurrentIndex(max(0,self.layout_choice.findData(self.settings.get('bilingual_layout','source_position'))))
         self.layout_choice.setToolTip('대조본 오른쪽 번역을 원문 영역에 대응시킵니다. 넘치는 내용은 같은 원문의 보충면에 이어 싣고, 쪽 대응을 확정하지 못하면 표시합니다.')
         form.addRow('대조본 배치',self.layout_choice)
+        self.parallel_choice=QComboBox()
+        self.parallel_choice.addItem('안정성 우선 · 1문단씩',1)
+        self.parallel_choice.addItem('처리량 우선 · 2문단 동시 (실험)',2)
+        self.parallel_choice.setCurrentIndex(max(0,self.parallel_choice.findData(self.settings.get('inference_parallel',1))))
+        self.parallel_choice.setToolTip('2문단 동시는 같은 모델을 공유하며 메모리를 더 사용합니다. GPU별 속도·의미 품질 비교는 미완료입니다. 엔진 시작 실패 시 순차 처리로 재시도합니다.')
+        self.parallel_choice.currentIndexChanged.connect(self.quality_changed)
+        form.addRow('동시 처리',self.parallel_choice)
         row=QHBoxLayout(); self.dest=QLineEdit(self.destination); self.dest.setReadOnly(True); row.addWidget(self.dest)
         self.dest_btn=QPushButton('폴더 선택'); self.dest_btn.setFixedHeight(38); self.dest_btn.clicked.connect(self.pick_destination); row.addWidget(self.dest_btn); form.addRow('결과 저장',row)
         body.addLayout(form)
@@ -154,6 +161,7 @@ class Window(QMainWindow):
         if self.active(): return
         self.folder=None; self.source=None; self.title.clear(); self.page_spec.clear()
         self.layout_choice.setCurrentIndex(max(0,self.layout_choice.findData(self.settings.get('bilingual_layout','source_position'))))
+        self.parallel_choice.setCurrentIndex(max(0,self.parallel_choice.findData(self.settings.get('inference_parallel',1))))
         preferred=self.settings.get('quality_mode','ensemble' if any(k in catalog() for k in ['qwen38','qwen30b']) else 'contextual')
         self.quality_choice.setCurrentIndex(max(0,self.quality_choice.findData(preferred)))
         self.drop.setText('PDF를 여기에 놓거나 클릭해서 선택하세요\n영어 학술 PDF · 로컬 처리'); self.refresh()
@@ -161,7 +169,7 @@ class Window(QMainWindow):
     def start_job(self):
         try:
             if not self.source: raise ValueError('PDF를 먼저 선택하세요.')
-            self.folder=create_job(self.source,self.destination,self.page_spec.text(),self.profile.currentData(),self.title.text(),self.model_choice.currentData(),self.review_choice.isChecked(),ocr_mode=self.ocr_choice.currentData(),quality_mode=self.quality_choice.currentData(),bilingual_layout=self.layout_choice.currentData())
+            self.folder=create_job(self.source,self.destination,self.page_spec.text(),self.profile.currentData(),self.title.text(),self.model_choice.currentData(),self.review_choice.isChecked(),ocr_mode=self.ocr_choice.currentData(),quality_mode=self.quality_choice.currentData(),bilingual_layout=self.layout_choice.currentData(),inference_parallel=self.parallel_choice.currentData())
             self.launch()
         except Exception as exc: QMessageBox.warning(self,'시작할 수 없습니다',str(exc))
 
@@ -173,6 +181,7 @@ class Window(QMainWindow):
     def quality_changed(self,*_):
         self.settings['quality_mode']=self.quality_choice.currentData()
         self.settings['bilingual_layout']=self.layout_choice.currentData()
+        self.settings['inference_parallel']=self.parallel_choice.currentData()
         atomic_json(root()/'settings.json',self.settings)
 
     def api_settings(self):
@@ -220,6 +229,9 @@ class Window(QMainWindow):
         self.quality_choice.blockSignals(True)
         self.quality_choice.setCurrentIndex(max(0,self.quality_choice.findData(state.get('quality_policy',{}).get('mode','legacy'))))
         self.quality_choice.blockSignals(False)
+        self.parallel_choice.blockSignals(True)
+        self.parallel_choice.setCurrentIndex(max(0,self.parallel_choice.findData(state.get('inference_parallel',1))))
+        self.parallel_choice.blockSignals(False)
         self.drop.setText(state.get('source_name','PDF')+'\n저장된 작업'); self.refresh()
 
     def refresh_history(self):
@@ -240,7 +252,7 @@ class Window(QMainWindow):
         self.review_choice.setEnabled(not active and bool(can_review))
         if not can_review:self.review_choice.setChecked(False)
         self.model.setText('로컬 모델  '+chosen.get('id','설치 대기')+'  ·  '+chosen.get('status_ko','비교 중 · 의미 검수 필요'))
-        for w in [self.drop,self.title,self.page_spec,self.profile,self.model_choice,self.ocr_choice,self.quality_choice,self.layout_choice,self.api_btn,self.dest_btn,self.new_btn,self.history]: w.setEnabled(not active)
+        for w in [self.drop,self.title,self.page_spec,self.profile,self.model_choice,self.ocr_choice,self.quality_choice,self.layout_choice,self.parallel_choice,self.api_btn,self.dest_btn,self.new_btn,self.history]: w.setEnabled(not active)
         self.start.setEnabled(not active and self.source is not None and bool(registry))
         self.cancel_btn.setEnabled(active)
         another_worker=bool(state.get('pid') and psutil.pid_exists(state['pid']))

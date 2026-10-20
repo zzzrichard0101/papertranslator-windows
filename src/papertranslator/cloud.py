@@ -76,6 +76,7 @@ class FreeReviewBackend:
 
 
 def review_records(records,ir,settings,folder,save_checkpoint,progress,cancel):
+    from .checkpoint import persist
     config=settings['cloud'];stamp=fingerprint(config);key=load_key()
     if not key:raise ValueError('무료 API 키가 없습니다. API 설정에서 등록하세요.')
     blocks={b['id']:b for b in ir['blocks']}
@@ -89,6 +90,7 @@ def review_records(records,ir,settings,folder,save_checkpoint,progress,cancel):
     if not budget:
         for record in pending:
             record['cloud_review']=dict(policy=stamp,attempted=False,status='deferred',reason='job_request_limit')
+            persist(save_checkpoint,record)
         save_checkpoint();return
     try:
         with FreeReviewBackend(config['model'],key,cancel) as backend:
@@ -98,7 +100,7 @@ def review_records(records,ir,settings,folder,save_checkpoint,progress,cancel):
                 draft=(record.get('candidate') if record['status']=='failed' else record['target']) or record['target']
                 context={k:v for k,v in blocks[record['id']].get('context',{}).items() if k in {'before','after'}}
                 record['cloud_review']=dict(policy=stamp,attempted=True,status='requesting',provider='OpenRouter',model=config['model'])
-                save_checkpoint() # A crash must not silently reset the request budget.
+                persist(save_checkpoint,record) # Commit the budget before making the request.
                 value,raw=edit(backend,record['source'],draft,context=context,
                     response_sink=lambda raw:atomic_json(folder/'responses'/('cloud-'+record['id']+'.json'),raw))
                 record['cloud_review'].update(status='completed',decision=value['decision'],evidence=value,accepted=False)
@@ -106,7 +108,7 @@ def review_records(records,ir,settings,folder,save_checkpoint,progress,cancel):
                     target=value['revision'].strip();warnings=[i for i in record.get('issues',[]) if i['code'].startswith('ocr_')]
                     record.update(target=target,candidate=target,status='translated',issues=check(record['source'],target)+warnings)
                     record['cloud_review'].update(accepted=True,draft=draft)
-                save_checkpoint()
+                persist(save_checkpoint,record)
     except Cancelled:raise
     except Exception:
         # Keep exact request/response material local; never echo headers or keys.
@@ -115,8 +117,10 @@ def review_records(records,ir,settings,folder,save_checkpoint,progress,cancel):
             if entry.get('status')=='completed':continue
             record['cloud_review']={**entry,'policy':stamp,'status':'unavailable','accepted':False}
             record['issues'].append(dict(code='cloud_unavailable',severity='major',message='무료 API 검토를 완료하지 못해 로컬 번역을 유지했습니다.'))
+            persist(save_checkpoint,record)
         save_checkpoint()
         return
     for record in pending[budget:]:
         record['cloud_review']=dict(policy=stamp,attempted=False,status='deferred',reason='job_request_limit')
+        persist(save_checkpoint,record)
     save_checkpoint()

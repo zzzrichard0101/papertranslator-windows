@@ -5,11 +5,15 @@ from pathlib import Path
 import shutil
 import time
 import uuid
+from contextlib import closing
 
 import pymupdf as fitz
 
 from .backend import Cancelled, LlamaBackend, OPTIONS
 from .models import resolve_model, options_for
+from .checkpoint import Checkpoint
+from .analysis_cache import get_analysis
+from .inference import completed as infer_completed, slots
 from .reviewer import review, REVIEW_VERSION
 from .document import analyze, export, PARSER
 from .quality import PROMPT_VERSION, VERSION
@@ -22,7 +26,8 @@ from .storage import atomic_json, fingerprint, now, pages, read_json, root, safe
 TERMINAL = {'review_required','completed_with_warnings', 'failed', 'cancelled', 'interrupted'}
 
 
-def create_job(source, destination, page_spec='', profile='general', title='',model_key=None,independent_review=False,ocr_mode='auto',quality_mode='contextual',bilingual_layout='source_position'):
+def create_job(source, destination, page_spec='', profile='general', title='',model_key=None,independent_review=False,ocr_mode='auto',quality_mode='contextual',bilingual_layout='source_position',inference_parallel=1):
+    if inference_parallel not in {1,2}:raise ValueError('지원하지 않는 동시 처리 수')
     signature(ocr_mode)
     if bilingual_layout not in {'source_position','reflow'}:raise ValueError('지원하지 않는 대조본 배치입니다.')
     source=Path(source).resolve(); destination=Path(destination).resolve()
@@ -46,6 +51,8 @@ def create_job(source, destination, page_spec='', profile='general', title='',mo
     state['model']=resolve_model(model_key)
     if quality_mode!='legacy' and state['model'].get('adapter')!='translategemma':
         state['model']['options']={**state['model'].get('options',{}),'temperature':.2}
+    state['inference_parallel']=inference_parallel
+    if inference_parallel==2:state['model']['options']={**state['model'].get('options',{}),'parallel':2}
     state['quality_policy']=policy(quality_mode,state['model'],read_json(root()/'model_registry.json',{}))
     if cloud:state['quality_policy']['cloud']={k:cloud[k] for k in ['enabled','model','max_requests']}
     state['ocr_mode']=ocr_mode
@@ -73,7 +80,7 @@ def _run(folder, retry_failed):
     state=read_json(folder/'state.json')
     if not state:
         raise ValueError('작업 기록이 없습니다.')
-    began=time.monotonic(); prior=state.get('elapsed_seconds',0)
+    began=time.monotonic(); prior=state.get('elapsed_seconds',0); journal=None
     cancel=lambda: (folder/'cancel').exists()
     def save(status=None, stage=None, **values):
         if status: state['status']=status
@@ -102,8 +109,11 @@ def _run(folder, retry_failed):
             if len(doc)>2000: raise ValueError('초기 버전은 2,000쪽 이하 PDF를 지원합니다.')
             selected=pages(state['page_spec'],len(doc)); total_pages=len(doc)
         save('analyzing','PDF 구조 분석',source_sha256=sha256(original),total_pages=total_pages,selected=selected)
-        ir=analyze(original,selected,lambda p: save(stage='PDF 분석 · 필요 시 로컬 OCR',current_source_page=p),
-                   ocr_mode=state.get('ocr_mode','off'),cancel=cancel,cache_dir=folder/'ocr-cache')
+        ir,analysis_hit=get_analysis(folder,dict(source_sha256=state['source_sha256'],selected=selected,
+            parser=PARSER,ocr=signature(state.get('ocr_mode','off'))),
+            lambda:analyze(original,selected,lambda p:save(stage='PDF 분석 · 필요 시 로컬 OCR',current_source_page=p),
+                ocr_mode=state.get('ocr_mode','off'),cancel=cancel,cache_dir=folder/'ocr-cache'),cancel)
+        save(analysis_cache_hit=analysis_hit)
         quality_policy=state.get('quality_policy',{'mode':'legacy'})
         if quality_policy['mode']!='legacy':attach_context(ir,state['title'],state['profile'])
         atomic_json(folder/'ir.json',ir)
@@ -114,10 +124,11 @@ def _run(folder, retry_failed):
         stamp=fingerprint(dict(hash=state['source_sha256'], selected=selected, profile=state['profile'],
                                model=model, parser=PARSER, prompt=PROMPT_VERSION, quality=VERSION,
                                runtime=registry['runtime_release'], options=options_for(model),ocr=ir['ocr'],quality_policy=quality_policy))
-        checkpoint=read_json(folder/'checkpoint.json',{})
-        records=checkpoint.get('records',{}) if checkpoint.get('fingerprint')==stamp else {}
+        journal=Checkpoint(folder,stamp)
+        records=journal.load()
         if retry_failed:
-            records={k:v for k,v in records.items() if v['status']!='failed'}
+            journal.remove([key for key,r in records.items() if r['status']=='failed'])
+            records=journal.load()
         state['cache_hits']=len(records)
         save('translating','모델 준비',total=len(ir['blocks']),completed=len(records),fingerprint=stamp,
              eta=dict(state='loading',seconds=None),eta_seconds=None)
@@ -133,39 +144,54 @@ def _run(folder, retry_failed):
         with LlamaBackend(folder,cancel,model=model) as backend:
             if any(not b['preserve'] for b in pending):
                 backend.start(lambda msg: save(stage=msg))
-            for block in ir['blocks']:
-                if cancel(): raise Cancelled()
-                if block['id'] in records: continue
-                units=0 if block['preserve'] else work_units(block['source'])
-                save(stage='문단 번역',current_source_page=block['source_page_index']+1,**progress_eta(units))
+            actual_slots=slots(backend)
+            save(inference_slots=actual_slots)
+            def translate_block(block):
+                if cancel():raise Cancelled()
+                measured_start=time.monotonic()
                 record={k:block[k] for k in ['id','source_page_index','source_page_indices','source_fragments','bbox','kind','source']}
                 record.update(target=block['source'],status='preserved',issues=[])
                 if not block['preserve']:
-                    measured_start=time.monotonic()
-                    record=translate_record(backend,block,state['profile'],model.get('adapter','hy'),folder)
-                    wall_seconds=time.monotonic()-measured_start
-                    record['wall_seconds']=round(wall_seconds,3)
-                    estimator.observe(units,wall_seconds,record.get('attempts',1),record['status']=='translated')
-                    remaining_work-=units
+                    record=translate_record(backend,block,state['profile'],model.get('adapter','hy'),folder,memory=journal)
+                    record['wall_seconds']=round(time.monotonic()-measured_start,3)
                 record.update(extraction=block['extraction'],ocr_confidence_min=block['ocr_confidence_min'])
                 if block['ocr_confidence_min'] is not None and block['ocr_confidence_min']<LOW_CONFIDENCE:
                     record['issues'].append(dict(code='ocr_low_confidence',severity='major',
                                                  message='OCR 인식 원문 신뢰도가 낮습니다. 이미지 원문과 대조하세요.'))
-                records[block['id']]=record
-                atomic_json(folder/'checkpoint.json',dict(fingerprint=stamp,records=records))
-                save(completed=len(records),**progress_eta())
+                return record
+            last_observed=time.monotonic();observed_units=0;observed_ok=True;observed_attempts=1
+            with closing(infer_completed(pending,translate_block,actual_slots,cancel,getattr(backend,'abort',lambda:None))) as results:
+                for block,record in results:
+                    units=0 if block['preserve'] else work_units(block['source'])
+                    if units:
+                        remaining_work-=units
+                        if actual_slots==1:
+                            if not record.get('translation_cache'):
+                                estimator.observe(units,record['wall_seconds'],record.get('attempts',1),record['status']=='translated')
+                        else:
+                            observed_units+=units
+                            observed_ok &= record['status']=='translated'
+                            observed_attempts=max(observed_attempts,record.get('attempts',1))
+                            elapsed=time.monotonic()-last_observed
+                            if elapsed>=2:
+                                estimator.observe(observed_units,elapsed,observed_attempts,observed_ok)
+                                last_observed=time.monotonic();observed_units=0;observed_ok=True;observed_attempts=1
+                    records[block['id']]=record
+                    journal.put(record)
+                    save(stage='문단 번역',current_source_page=block['source_page_index']+1,completed=len(records),**progress_eta())
+        journal.snapshot()
         if cancel(): raise Cancelled()
         if quality_policy['mode'] in {'ensemble','hybrid'}:
             save('refining','다중 모델 원문 대조 교정',eta_seconds=None,eta=None)
             refine_records(records,ir,quality_policy,folder,state['profile'],LlamaBackend,
-                lambda:atomic_json(folder/'checkpoint.json',dict(fingerprint=stamp,records=records)),
-                lambda message:save(stage=message),cancel)
+                journal,
+                lambda message:save(stage=message),cancel,workers=state.get('inference_parallel',1))
         if cancel():raise Cancelled()
         if quality_policy['mode']=='hybrid':
             from .cloud import review_records
             save('cloud_reviewing','무료 API 선택 문단 검토',eta_seconds=None,eta=None)
             review_records(records,ir,quality_policy,folder,
-                lambda:atomic_json(folder/'checkpoint.json',dict(fingerprint=stamp,records=records)),
+                journal,
                 lambda message:save(stage=message),cancel)
         if cancel():raise Cancelled()
         if state.get('reviewer'):
@@ -184,7 +210,7 @@ def _run(folder, retry_failed):
                     except Exception as exc:
                         record['review']=dict(verdict='uncertain',evidence_validated=False,explanation_ko=str(exc)[:500])
                     record['review_fingerprint']=review_stamp
-                    atomic_json(folder/'checkpoint.json',dict(fingerprint=stamp,records=records))
+                    journal.put(record)
             if cancel(): raise Cancelled()
         if any(r['kind']=='diagram_label' for r in records.values()):
             from .label_fit import run as fit_labels
@@ -193,7 +219,7 @@ def _run(folder, retry_failed):
             label_model={**label_model,'options':{**label_model.get('options',{}),'context':8192,'temperature':.1}}
             save('fitting_labels','도식 문구와 상자 크기 맞춤',eta_seconds=None,eta=None)
             fit_labels(records,label_model,folder,LlamaBackend,
-                lambda:atomic_json(folder/'checkpoint.json',dict(fingerprint=stamp,records=records)),
+                journal,
                 lambda message:save(stage=message),cancel)
         if state.get('bilingual_layout','reflow')=='source_position':
             from .alignment import run as align_records
@@ -202,8 +228,9 @@ def _run(folder, retry_failed):
             alignment_model={**alignment_model,'options':{**alignment_model.get('options',{}),'context':8192,'temperature':.1}}
             save('aligning','원문 쪽과 번역 대응 정리',eta_seconds=None,eta=None)
             align_records(records,alignment_model,folder,LlamaBackend,
-                lambda:atomic_json(folder/'checkpoint.json',dict(fingerprint=stamp,records=records)),
+                journal,
                 lambda message:save(stage=message),cancel)
+        journal.snapshot()
         save('typesetting','한국어·영한 대조 PDF 조판',eta_seconds=None,current_source_page=None)
         # One result revision is committed only after both PDFs and report validate.
         staging=folder/('revision-'+uuid.uuid4().hex)
@@ -255,4 +282,10 @@ def _run(folder, retry_failed):
     except Exception as exc:
         save('failed','작업 실패 · 기록 보존',error=str(exc)[:1000],pid=None,eta_seconds=None)
     finally:
-        ctypes.windll.kernel32.SetThreadExecutionState(0x80000000)
+        try:
+            if journal is not None:
+                try:journal.snapshot()
+                except OSError:pass # Compatibility snapshot only; every database commit is already durable.
+                finally:journal.close()
+        finally:
+            ctypes.windll.kernel32.SetThreadExecutionState(0x80000000)

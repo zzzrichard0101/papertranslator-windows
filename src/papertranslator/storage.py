@@ -27,12 +27,13 @@ def read_json(path, default=None):
         return default
 
 
-def atomic_json(path, value):
+def atomic_json(path, value, *, compact=False):
     path = Path(path); path.parent.mkdir(parents=True, exist_ok=True)
     temp = path.with_name(path.name + '.' + uuid.uuid4().hex + '.tmp')
     try:
         with temp.open('w', encoding='utf-8', newline='\n') as f:
-            json.dump(value, f, ensure_ascii=False, indent=2)
+            json.dump(value, f, ensure_ascii=False, indent=None if compact else 2,
+                      separators=(',', ':') if compact else None)
             f.flush(); os.fsync(f.fileno())
         # Windows readers/antivirus can briefly hold destination without DELETE sharing.
         for attempt in range(12):

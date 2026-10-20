@@ -7,6 +7,7 @@ import sys
 import time
 
 from papertranslator.jobs import create_job
+from papertranslator.checkpoint import read_checkpoint, Checkpoint
 from papertranslator.storage import atomic_json, read_json, root, sha256
 
 
@@ -32,7 +33,7 @@ def main():
     (folder/'cancel').touch(); process.wait(timeout=45)
     cancelled=read_json(folder/'state.json')
     assert cancelled['status']=='cancelled'
-    checkpoint=read_json(folder/'checkpoint.json'); completed_before=len(checkpoint['records'])
+    checkpoint=read_checkpoint(folder); completed_before=len(checkpoint['records'])
     assert completed_before>0
     (folder/'cancel').unlink()
     process=subprocess.Popen(command); process.wait(timeout=120)
