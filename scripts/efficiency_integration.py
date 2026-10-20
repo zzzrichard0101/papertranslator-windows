@@ -35,7 +35,7 @@ def main():
     q=read_json(Path(state['output'])/'Quality.json')
     assert q['failed_paragraphs']==0 and len(calls)==1
     assert any(r.get('translation_cache') for r in q['records'])
-    assert q['efficiency_policy']['validation']=='typed-v2'
+    assert q['efficiency_policy']['validation']=='typed-v3'
     assert sha256(source)==sha256(Path(state['output'])/'Original.pdf')
     before=len(calls);stamp=state['fingerprint'];jobs.run_job(folder)
     assert len(calls)==before and read_json(folder/'state.json')['fingerprint']==stamp

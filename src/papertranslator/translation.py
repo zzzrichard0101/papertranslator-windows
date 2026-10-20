@@ -23,7 +23,7 @@ def generation(backend,block,prompt,mapping,profile,adapter,memory,max_tokens):
         model={k:model.get(k) for k in ['id','sha256','revision','adapter']},options=backend.options,
         runtime=(getattr(backend,'registry',None) or {}).get('runtime_release'),
         prompt_version=PROMPT_VERSION,quality_version=VERSION)
-    if typed=='typed-v2':contract['validation']=typed
+    if typed in {'typed-v2','typed-v3'}:contract['validation']=typed
     key=fingerprint(contract)
     with memory.response_lock(key) if memory else nullcontext():
         if hasattr(backend,'check'):backend.check()

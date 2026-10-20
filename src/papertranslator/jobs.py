@@ -71,8 +71,8 @@ def create_job(source, destination, page_spec='', profile='general', title='',mo
     state['inference_acceleration']=inference_acceleration
     state['processing_revision']=3
     state['document_layout']='auto_columns_v1'
-    state['efficiency_policy']=dict(version='local-efficiency-1',validation='typed-v2',response_cache='resolved-2',session_reuse=True)
-    state['quality_policy']['validation']='typed-v2'
+    state['efficiency_policy']=dict(version='local-efficiency-1',validation='typed-v3',response_cache='resolved-2',session_reuse=True)
+    state['quality_policy']['validation']='typed-v3'
     from .source_integrity import VERSION as SOURCE_VERSION
     state['source_integrity_policy']=SOURCE_VERSION
     if cloud:state['quality_policy']['cloud']={k:cloud[k] for k in ['enabled','model','max_requests']}

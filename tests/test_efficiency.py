@@ -41,7 +41,7 @@ def test_only_pure_scientific_objects_bypass_translation():
         assert preserved_kind(value) is None
 
 
-@pytest.mark.parametrize('validation',['typed-v1','typed-v2'])
+@pytest.mark.parametrize('validation',['typed-v1','typed-v2','typed-v3'])
 def test_resolved_cache_ignores_random_tokens_but_not_context(tmp_path,validation):
     class Engine:
         options=dict(context=4096,temperature=.2,seed=42)

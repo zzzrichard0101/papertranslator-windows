@@ -151,3 +151,36 @@ def test_retries_retain_all_original_failures_instead_of_oscillating(tmp_path):
     assert len(backend.prompts)==2 and result['status']=='translated'
     assert all('foreign_script' in prompt and 'dimension_role' in prompt for prompt in backend.prompts)
     assert not result['issues']
+
+
+@pytest.mark.parametrize('source,target',[
+    ('6–10K meaningful Gaussians','6,000~10,000개의 유의미한 가우시안'),
+    ('6–10K Gaussians','6~10K개의 가우시안'),
+    ('200–500K Gaussians','20만~50만 개의 가우시안'),
+    ('200–500K Gaussians','20~50만 개의 가우시안'),
+    ('6-10K points','6천~1만 개의 점'),
+    ('1K–2M points','1천~200만 개의 점'),
+    ('-6–-2K Gaussians','-6천~-2천 개의 가우시안'),
+    ('6–10K iterations','6천~1만 회의 반복'),
+])
+def test_both_range_endpoints_units_and_scales_match(source,target):
+    assert not check(source,target,typed='typed-v3')
+
+
+@pytest.mark.parametrize('source,target',[
+    ('6–10K Gaussians','6~10,000개의 가우시안'),
+    ('6–10K Gaussians','6,000~11,000개의 가우시안'),
+    ('6–10K Gaussians','6,000~10,000개의 점'),
+    ('6–10K Gaussians','6,000~10,000개'),
+    ('6–10K Gaussians','-6,000~10,000개의 가우시안'),
+    ('+6–10K Gaussians','6,000~10,000개의 가우시안'),
+    ('200–500K Gaussians','20만~50개의 가우시안'),
+    ('6–10K points and 6–10K points','6천~1만 개의 점'),
+])
+def test_bad_ranges_cannot_hide_behind_a_scalar_upper_endpoint(source,target):
+    assert any(i['code']=='quantity' for i in check(source,target,typed='typed-v3'))
+
+
+def test_range_equivalence_does_not_change_older_validation_policy():
+    for mode in [False,True,'typed-v2']:
+        assert check('200–500K Gaussians','20만~50만 개의 가우시안',typed=mode)

@@ -17,6 +17,7 @@ def main():
     with fitz.open() as doc:
         p=doc.new_page(width=600,height=800)
         p.insert_text((50,120),'Fig. 6. At 30K itera-\ntions, the artifacts are reduced.',fontsize=9)
+        p.insert_text((50,170),'The algorithm keeps 6-10K meaningful Gaussians.',fontsize=10)
         p.insert_text((50,200),'REFERENCES\nAlice Smith. 2020. Neural study.\nBob Jones. 2021. Another study.\nCarol King. 2022. Final study.',fontsize=10)
         p.insert_text((50,350),'APPENDIX A',fontsize=17)
         p.insert_text((50,390),'The experiment uses three samples.',fontsize=10)
@@ -38,6 +39,7 @@ def main():
                 target='그림 6. 30,000회의 반복에서 인공적인 흔적이 줄어든다.'
             else:target={'REFERENCES':'참고문헌','APPENDIX A':'부록 A',
                 'The experiment uses three samples.':'실험은 세 개의 표본을 사용한다.',
+                'The algorithm keeps 6-10K meaningful Gaussians.':'알고리즘은 6천~1만 개의 유의미한 가우시안을 유지한다.',
                 'Research methods':'연구 방법',
                 'We trained for 12 hours.':'12시간 동안 학습했다.'}[text]
             return dict(text=target,seconds=.01)

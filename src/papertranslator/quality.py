@@ -44,7 +44,7 @@ def allowed_written_numbers(source):
 def protected_literals(text,typed=False):
     if not typed:return PROTECTED.findall(text)
     from .typed_literals import EXTRA,EXTRA_V2
-    extra=EXTRA_V2 if typed=='typed-v2' else EXTRA
+    extra=EXTRA_V2 if typed in {'typed-v2','typed-v3'} else EXTRA
     pattern=re.compile('(?:'+extra.pattern+')|(?:'+PROTECTED.pattern+')')
     return pattern.findall(text)
 
@@ -61,7 +61,7 @@ def protect(text,typed=False):
     pattern=PROTECTED
     if typed:
         from .typed_literals import EXTRA,EXTRA_V2
-        extra=EXTRA_V2 if typed=='typed-v2' else EXTRA
+        extra=EXTRA_V2 if typed in {'typed-v2','typed-v3'} else EXTRA
         pattern=re.compile('(?:'+extra.pattern+')|(?:'+PROTECTED.pattern+')')
     return pattern.sub(replace, text), mapping
 
@@ -180,7 +180,7 @@ def check(source, target,typed=False):
         for literal in set(protected_literals(source,typed)):
             if source.count(literal)!=target.count(literal):
                 errors.append(dict(code='literal',severity='critical',message='인용·식별자·링크의 누락 또는 변경'))
-        if typed=='typed-v2':
+        if typed in {'typed-v2','typed-v3'}:
             from .typed_literals import DIMENSION
             for shape in DIMENSION.finditer(source):
                 if (re.match(r'\s+pixels?\s+(?:tiles?|bins?)\b',source[shape.end():],re.I) and
@@ -223,7 +223,12 @@ def check(source, target,typed=False):
     numeric_source,numeric_target=citation_spacing(normalize_percent(source)),citation_spacing(normalize_percent(target))
     if typed:
         from .typed_literals import compact_counts
-        numeric_source,numeric_target=compact_counts(numeric_source,numeric_target,extended=typed=='typed-v2')
+        if typed=='typed-v3':
+            from .typed_literals import compact_ranges
+            numeric_source,numeric_target,range_unmatched=compact_ranges(numeric_source,numeric_target)
+            if range_unmatched:
+                errors.append(dict(code='quantity',severity='major',message='K/M 수량 범위의 양 끝 값·단위·부호를 대조하세요.',unmatched=range_unmatched))
+        numeric_source,numeric_target=compact_counts(numeric_source,numeric_target,extended=typed in {'typed-v2','typed-v3'})
     numeric_source,numeric_target,unmatched=equivalent_durations(numeric_source,numeric_target)
     numeric_source,numeric_target,fraction_unmatched=equivalent_fractions(numeric_source,numeric_target)
     unmatched+=fraction_unmatched

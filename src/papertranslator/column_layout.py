@@ -284,8 +284,10 @@ def compose(ir, records, original, bilingual_path, korean_path, cancel=lambda: F
                 column_width=(gutter if side==0 else w-gutter) if two else w
                 inside_image=any((box&b).get_area()>box.get_area()*.4 for b in images)
                 small = box.width < column_width*.5 and box.height<35 and len(group['text'])<100
+                compact_heading=(group['kind']=='heading' and box.height<16 and len(group['text'])<80 and
+                    any(0<=b.y0-box.y1<8 and min(b.x1,box.x1)-max(b.x0,box.x0)>5 for b in protected))
                 if ((two and col is None) or group['kind'] in {'caption','table_cell','diagram_label','form_question'}
-                    or group.get('rotation') or inside_image or (small and group['kind']!='heading')):
+                    or group.get('rotation') or inside_image or compact_heading or (small and group['kind']!='heading')):
                     anchored.append((side,group))
                 else: flow[side].append(group)
             obstacles=protected+images; pending=deferred; placed_boxes=[]; erase=[]; anchor_draw=[]

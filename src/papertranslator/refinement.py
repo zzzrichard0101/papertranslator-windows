@@ -87,13 +87,13 @@ def validate_edit(value,source,draft,typed=False):
         if not revision:raise ValueError('교정 번역 누락')
         issues=check(source,revision,typed=typed)
         if blocking(issues):
-            detail=': '+validation_feedback(issues,revision) if typed=='typed-v2' else ''
+            detail=': '+validation_feedback(issues,revision) if typed in {'typed-v2','typed-v3'} else ''
             raise ValueError('교정 후보의 숫자·출력 검사 미통과'+detail)
         for protected in set(protected_literals(source,typed)):
             if revision.count(protected)!=source.count(protected):raise ValueError('교정 중 코드·인용·링크의 누락 또는 중복')
         if len(source)>300 and len(revision)<len(draft)*.4:raise ValueError('교정 후보가 지나치게 축약됐습니다.')
     elif value['revision'].strip():raise ValueError('유지/불확실 판정에는 교정문을 채우지 마세요.')
-    if value['decision']=='keep' and typed=='typed-v2':
+    if value['decision']=='keep' and typed in {'typed-v2','typed-v3'}:
         issues=check(source,draft,typed=typed)
         if blocking(issues):
             raise ValueError('유지 판정의 번역이 검사 미통과: '+validation_feedback(issues,draft))
@@ -119,9 +119,9 @@ def edit(backend,source,draft,alternative='',context=None,response_sink=None,rej
         'No inference from missing text. No additional facts. No Hanja/Japanese in Korean prose. '
         'EBP = 근거 기반 실천; EBM = 근거 기반 의학; RCT = 무작위 대조시험; effectiveness = 효과성. '
         'Return only the required JSON.\n'+
-        ('Terminology when present in SOURCE: radix sort = 기수 정렬.\n' if typed=='typed-v2' and 'radix sort' in source else '')+
+        ('Terminology when present in SOURCE: radix sort = 기수 정렬.\n' if typed in {'typed-v2','typed-v3'} and 'radix sort' in source else '')+
         ('The previous candidate was rejected: '+rejection[:300]+'. Fix the cited problem; do not repeat that invalid candidate.\n'+
-         ('Fix ALL listed failures together in the complete revision.\n' if typed=='typed-v2' else '') if rejection else '')+json.dumps(dict(SOURCE=source,DRAFT=draft,
+         ('Fix ALL listed failures together in the complete revision.\n' if typed in {'typed-v2','typed-v3'} else '') if rejection else '')+json.dumps(dict(SOURCE=source,DRAFT=draft,
             ALTERNATIVE=alternative,CONTEXT=context or {},PROTECTED_LITERALS=[dict(text=s,count=source.count(s)) for s in sorted(set(protected_literals(source,typed)))],TERMINOLOGY=terms_for(source,
             'art_therapy' if 'art therapy' in (context or {}).get('domain','') else None,context)),ensure_ascii=False))
     raw=backend.translate(prompt,max_tokens=2200,json_schema=SCHEMA)
@@ -138,7 +138,7 @@ def edit_record(backend,record,block,settings,stamp,folder,cancel):
     result=dict(policy=stamp,version=VERSION,draft=draft,accepted=False,editor=settings['editor']['id'])
     try:
         rejection='';base_rejection='';result['attempts']=[]
-        if typed=='typed-v2':
+        if typed in {'typed-v2','typed-v3'}:
             issues=check(record['source'],draft,typed=typed)
             if blocking(issues):
                 base_rejection='All draft failures: '+validation_feedback(issues,draft)

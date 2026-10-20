@@ -110,3 +110,24 @@ def test_mixed_single_column_scientific_page_does_not_drop_right_side_translatio
     assert result['validation']['status']=='passed'
     with fitz.open(tmp_path/'ko.pdf') as doc:
         assert '단일열오른쪽알고리즘번역.' in normalized(''.join(p.get_text() for p in doc))
+
+
+def test_compact_heading_stays_above_preserved_bibliography(tmp_path):
+    source=tmp_path/'bibliography.pdf'
+    with fitz.open() as doc:
+        p=doc.new_page(width=600,height=800)
+        p.insert_text((40,90),'REFERENCES',fontsize=10)
+        for x in [40,330]:
+            for row in range(15):
+                p.insert_text((x,104+row*12),f'Alice Smith. 2020. Academic study number {row}.',fontsize=8)
+        doc.save(source)
+    ir=analyze(source,[0],ocr_mode='off',academic=True,source_integrity=True)
+    assert ir['pages'][0]['reading_columns']
+    records={b['id']:{**b,'target':'참고문헌' if b['source']=='REFERENCES' else b['source'],
+        'status':'preserved' if b['preserve'] else 'translated','issues':[]} for b in ir['blocks']}
+    result=compose(ir,records,source,tmp_path/'dual.pdf',tmp_path/'ko.pdf')
+    assert result['validation']['status']=='passed'
+    with fitz.open(tmp_path/'ko.pdf') as doc:
+        heading=doc[0].search_for('참고문헌')[0]
+        first=doc[0].search_for('Alice Smith')[0]
+        assert heading.y1<=first.y0 and heading.y0<100
