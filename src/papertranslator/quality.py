@@ -43,8 +43,9 @@ def allowed_written_numbers(source):
 
 def protected_literals(text,typed=False):
     if not typed:return PROTECTED.findall(text)
-    from .typed_literals import EXTRA
-    pattern=re.compile('(?:'+EXTRA.pattern+')|(?:'+PROTECTED.pattern+')')
+    from .typed_literals import EXTRA,EXTRA_V2
+    extra=EXTRA_V2 if typed=='typed-v2' else EXTRA
+    pattern=re.compile('(?:'+extra.pattern+')|(?:'+PROTECTED.pattern+')')
     return pattern.findall(text)
 
 
@@ -59,8 +60,9 @@ def protect(text,typed=False):
         return token
     pattern=PROTECTED
     if typed:
-        from .typed_literals import EXTRA
-        pattern=re.compile('(?:'+EXTRA.pattern+')|(?:'+PROTECTED.pattern+')')
+        from .typed_literals import EXTRA,EXTRA_V2
+        extra=EXTRA_V2 if typed=='typed-v2' else EXTRA
+        pattern=re.compile('(?:'+extra.pattern+')|(?:'+PROTECTED.pattern+')')
     return pattern.sub(replace, text), mapping
 
 
@@ -175,9 +177,16 @@ def check(source, target,typed=False):
     if typed:
         from .typed_literals import preserved_kind
         if source.strip()==target.strip() and preserved_kind(source):return []
-        for literal in set(protected_literals(source,True)):
+        for literal in set(protected_literals(source,typed)):
             if source.count(literal)!=target.count(literal):
                 errors.append(dict(code='literal',severity='critical',message='인용·식별자·링크의 누락 또는 변경'))
+        if typed=='typed-v2':
+            from .typed_literals import DIMENSION
+            for shape in DIMENSION.finditer(source):
+                if (re.match(r'\s+pixels?\s+(?:tiles?|bins?)\b',source[shape.end():],re.I) and
+                    re.search(re.escape(shape[0])+r'\s*개(?:의)?\s*(?:픽셀\s*)?(?:타일|빈)',target)):
+                    errors.append(dict(code='dimension_role',severity='major',
+                        message='타일의 픽셀 크기를 타일 개수로 바꾼 표현을 교정합니다.'))
     if '~' not in source and re.search(r'~\s*(?:을|를|이|가|에|은|는)',target):
         errors.append(dict(code='placeholder',severity='major',message='번역에 미완성 자리표시자가 있어 다시 번역합니다.'))
     if re.search(r'\bADHD\b|Attention\s+Deficit\s+Hyperactivity',source,re.I) and '공격성장애' in target:
@@ -214,7 +223,7 @@ def check(source, target,typed=False):
     numeric_source,numeric_target=citation_spacing(normalize_percent(source)),citation_spacing(normalize_percent(target))
     if typed:
         from .typed_literals import compact_counts
-        numeric_source,numeric_target=compact_counts(numeric_source,numeric_target)
+        numeric_source,numeric_target=compact_counts(numeric_source,numeric_target,extended=typed=='typed-v2')
     numeric_source,numeric_target,unmatched=equivalent_durations(numeric_source,numeric_target)
     numeric_source,numeric_target,fraction_unmatched=equivalent_fractions(numeric_source,numeric_target)
     unmatched+=fraction_unmatched

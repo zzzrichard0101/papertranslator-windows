@@ -1,10 +1,11 @@
 """One bounded retry for broken responses; retain both attempts locally."""
+from .typed_literals import validation_mode
 from .backend import Cancelled
 from contextlib import nullcontext
 from .quality import check,make_prompt,protect,restore,PROMPT_VERSION,VERSION
 from .storage import atomic_json,fingerprint
 
-BLOCKING={'numbers','quantity','session_frequency','undertranslation','placeholder','adhd_term','empty','untranslated','new_markup','embedded_han','foreign_script','economic_depression','expansion'}
+BLOCKING={'numbers','quantity','dimension_role','session_frequency','undertranslation','placeholder','adhd_term','empty','untranslated','new_markup','embedded_han','foreign_script','economic_depression','expansion'}
 
 
 def blocking(issues):
@@ -13,15 +14,17 @@ def blocking(issues):
 
 def generation(backend,block,prompt,mapping,profile,adapter,memory,max_tokens):
     model=getattr(backend,'model',None) or {}
-    typed=block.get('validation_policy')=='typed-v1'
+    typed=validation_mode(block.get('validation_policy'))
     cache_prompt=prompt
     if typed:
         for n,token in enumerate(mapping):cache_prompt=cache_prompt.replace(token,f'[PT_LITERAL_{n}]')
-    key=fingerprint(dict(version='translation-response-resolved-2' if typed else 'translation-response-1',source=block['source'],kind=block['kind'],
+    contract=dict(version='translation-response-resolved-2' if typed else 'translation-response-1',source=block['source'],kind=block['kind'],
         prompt=cache_prompt,mapping=list(mapping.values()) if typed else mapping,profile=profile,adapter=adapter,max_tokens=max_tokens,
         model={k:model.get(k) for k in ['id','sha256','revision','adapter']},options=backend.options,
         runtime=(getattr(backend,'registry',None) or {}).get('runtime_release'),
-        prompt_version=PROMPT_VERSION,quality_version=VERSION))
+        prompt_version=PROMPT_VERSION,quality_version=VERSION)
+    if typed=='typed-v2':contract['validation']=typed
+    key=fingerprint(contract)
     with memory.response_lock(key) if memory else nullcontext():
         if hasattr(backend,'check'):backend.check()
         cached=memory.get_response(key) if memory else None
@@ -48,8 +51,8 @@ def generation(backend,block,prompt,mapping,profile,adapter,memory,max_tokens):
 def translate_record(backend,block,profile,adapter,folder,memory=None):
     record={k:block[k] for k in ['id','source_page_index','source_page_indices','source_fragments','bbox','kind','source']}
     record.update(target=block['source'],status='failed',issues=[],attempts=0,seconds=0.)
-    typed=block.get('validation_policy')=='typed-v1'
-    if typed:record['validation_policy']='typed-v1'
+    typed=validation_mode(block.get('validation_policy'))
+    if typed:record['validation_policy']=block['validation_policy']
     text,mapping=protect(block['source'],typed=typed);base=make_prompt(text,mapping,profile,adapter,context=block.get('context'))
     # Specialist templates receive only their documented translation contract.
     for attempt in range(1 if adapter=='translategemma' else 2):

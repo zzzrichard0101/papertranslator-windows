@@ -1,4 +1,5 @@
 """Opt-in, text-only, zero-price OpenRouter review. No paid fallback."""
+from .typed_literals import validation_mode
 import json
 import time
 from decimal import Decimal,InvalidOperation
@@ -102,11 +103,11 @@ def review_records(records,ir,settings,folder,save_checkpoint,progress,cancel):
                 record['cloud_review']=dict(policy=stamp,attempted=True,status='requesting',provider='OpenRouter',model=config['model'])
                 persist(save_checkpoint,record) # Commit the budget before making the request.
                 value,raw=edit(backend,record['source'],draft,context=context,
-                    response_sink=lambda raw:atomic_json(folder/'responses'/('cloud-'+record['id']+'.json'),raw),typed=record.get('validation_policy')=='typed-v1')
+                    response_sink=lambda raw:atomic_json(folder/'responses'/('cloud-'+record['id']+'.json'),raw),typed=validation_mode(record.get('validation_policy')))
                 record['cloud_review'].update(status='completed',decision=value['decision'],evidence=value,accepted=False)
                 if value['decision']=='revise':
                     target=value['revision'].strip();warnings=[i for i in record.get('issues',[]) if i['code'].startswith('ocr_')]
-                    record.update(target=target,candidate=target,status='translated',issues=check(record['source'],target,typed=record.get('validation_policy')=='typed-v1')+warnings)
+                    record.update(target=target,candidate=target,status='translated',issues=check(record['source'],target,typed=validation_mode(record.get('validation_policy')))+warnings)
                     record['cloud_review'].update(accepted=True,draft=draft)
                 persist(save_checkpoint,record)
     except Cancelled:raise

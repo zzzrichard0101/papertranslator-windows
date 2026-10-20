@@ -1,4 +1,5 @@
 """Source-grounded editing; machine revisions are never human approval."""
+from .typed_literals import validation_mode
 import copy
 import json
 from contextlib import closing
@@ -59,6 +60,20 @@ def attach_context(ir,title,profile='general',document_terms=False):
             if terms:block['context']['terminology']=terms
 
 
+def validation_feedback(issues,text):
+    details=[]
+    for issue in issues:
+        item={key:issue[key] for key in ('code','missing','added') if key in issue}
+        if issue['code']=='foreign_script':
+            import re
+            item['invalid_target_quotes']=list(dict.fromkeys(text[max(0,m.start()-6):m.end()+6]
+                for m in re.finditer(r'[\u3040-\u30ff]+',text)))[:1]
+        if issue['code']=='dimension_role':
+            item['meaning']='Tile pixel size is not a tile count; remove count suffix 개.'
+        details.append(item)
+    return json.dumps(details,ensure_ascii=False)[:260]
+
+
 def validate_edit(value,source,draft,typed=False):
     if not isinstance(value,dict) or set(value)!=set(SCHEMA['required']):raise ValueError('교정 JSON 필드 오류')
     if any(not isinstance(v,str) for v in value.values()):raise ValueError('교정 필드 타입 오류')
@@ -70,11 +85,18 @@ def validate_edit(value,source,draft,typed=False):
         if not value['draft_evidence'] or value['draft_evidence'] not in draft:raise ValueError('교정의 번역 인용 근거 불일치')
         revision=value['revision'].strip()
         if not revision:raise ValueError('교정 번역 누락')
-        if blocking(check(source,revision,typed=typed)):raise ValueError('교정 후보의 숫자·출력 검사 미통과')
+        issues=check(source,revision,typed=typed)
+        if blocking(issues):
+            detail=': '+validation_feedback(issues,revision) if typed=='typed-v2' else ''
+            raise ValueError('교정 후보의 숫자·출력 검사 미통과'+detail)
         for protected in set(protected_literals(source,typed)):
             if revision.count(protected)!=source.count(protected):raise ValueError('교정 중 코드·인용·링크의 누락 또는 중복')
         if len(source)>300 and len(revision)<len(draft)*.4:raise ValueError('교정 후보가 지나치게 축약됐습니다.')
     elif value['revision'].strip():raise ValueError('유지/불확실 판정에는 교정문을 채우지 마세요.')
+    if value['decision']=='keep' and typed=='typed-v2':
+        issues=check(source,draft,typed=typed)
+        if blocking(issues):
+            raise ValueError('유지 판정의 번역이 검사 미통과: '+validation_feedback(issues,draft))
     return value
 
 
@@ -96,7 +118,10 @@ def edit(backend,source,draft,alternative='',context=None,response_sink=None,rej
         'If source quality or meaning is uncertain, decide uncertain with empty revision. '
         'No inference from missing text. No additional facts. No Hanja/Japanese in Korean prose. '
         'EBP = 근거 기반 실천; EBM = 근거 기반 의학; RCT = 무작위 대조시험; effectiveness = 효과성. '
-        'Return only the required JSON.\n'+('The previous candidate was rejected: '+rejection[:300]+'. Fix the cited problem; do not repeat that invalid candidate.\n' if rejection else '')+json.dumps(dict(SOURCE=source,DRAFT=draft,
+        'Return only the required JSON.\n'+
+        ('Terminology when present in SOURCE: radix sort = 기수 정렬.\n' if typed=='typed-v2' and 'radix sort' in source else '')+
+        ('The previous candidate was rejected: '+rejection[:300]+'. Fix the cited problem; do not repeat that invalid candidate.\n'+
+         ('Fix ALL listed failures together in the complete revision.\n' if typed=='typed-v2' else '') if rejection else '')+json.dumps(dict(SOURCE=source,DRAFT=draft,
             ALTERNATIVE=alternative,CONTEXT=context or {},PROTECTED_LITERALS=[dict(text=s,count=source.count(s)) for s in sorted(set(protected_literals(source,typed)))],TERMINOLOGY=terms_for(source,
             'art_therapy' if 'art therapy' in (context or {}).get('domain','') else None,context)),ensure_ascii=False))
     raw=backend.translate(prompt,max_tokens=2200,json_schema=SCHEMA)
@@ -106,13 +131,18 @@ def edit(backend,source,draft,alternative='',context=None,response_sink=None,rej
 
 def edit_record(backend,record,block,settings,stamp,folder,cancel):
     record=copy.deepcopy(record)
-    typed=settings.get('validation')=='typed-v1'
+    typed=validation_mode(settings.get('validation'))
     draft=record.get('candidate') if record['status']=='failed' else record['target']
     draft=draft or record['target']
     alternative=record.get('alternative',{}).get('candidate','')
     result=dict(policy=stamp,version=VERSION,draft=draft,accepted=False,editor=settings['editor']['id'])
     try:
-        rejection='';result['attempts']=[]
+        rejection='';base_rejection='';result['attempts']=[]
+        if typed=='typed-v2':
+            issues=check(record['source'],draft,typed=typed)
+            if blocking(issues):
+                base_rejection='All draft failures: '+validation_feedback(issues,draft)
+                rejection=base_rejection
         for attempt in range(3):
             if cancel():raise Cancelled()
             try:
@@ -135,7 +165,9 @@ def edit_record(backend,record,block,settings,stamp,folder,cancel):
                 break
             except Cancelled:raise
             except Exception as exc:
-                rejection=str(exc)[:300];result['attempts'].append(dict(attempt=attempt+1,error=rejection))
+                error=str(exc)[:300]
+                rejection=(base_rejection+'; Candidate failure: '+error[:120]) if base_rejection else error
+                result['attempts'].append(dict(attempt=attempt+1,error=error))
                 if attempt==2:raise
         result.update(value)
         if value['decision']=='revise':

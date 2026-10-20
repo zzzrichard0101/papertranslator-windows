@@ -41,7 +41,8 @@ def test_only_pure_scientific_objects_bypass_translation():
         assert preserved_kind(value) is None
 
 
-def test_resolved_cache_ignores_random_tokens_but_not_context(tmp_path):
+@pytest.mark.parametrize('validation',['typed-v1','typed-v2'])
+def test_resolved_cache_ignores_random_tokens_but_not_context(tmp_path,validation):
     class Engine:
         options=dict(context=4096,temperature=.2,seed=42)
         model=dict(id='synthetic',sha256='synthetic',adapter='hy')
@@ -51,7 +52,7 @@ def test_resolved_cache_ignores_random_tokens_but_not_context(tmp_path):
             self.calls.append(prompt)
             return dict(text='연구 결과 '+re.search(r'\[PX[A-F0-9]+X0\]',prompt)[0],seconds=1.,usage={})
     block=dict(id='a',source='Research findings [Miller et al. 2020].',kind='paragraph',
-        source_page_index=0,source_page_indices=[0],source_fragments=[],bbox=[0,0,10,10],validation_policy='typed-v1')
+        source_page_index=0,source_page_indices=[0],source_fragments=[],bbox=[0,0,10,10],validation_policy=validation)
     engine=Engine();store=Checkpoint(tmp_path,'test')
     first=translate_record(engine,block,'general','hy',tmp_path,store)
     second=translate_record(engine,{**block,'id':'b','bbox':[30,30,40,40]},'general','hy',tmp_path,store)

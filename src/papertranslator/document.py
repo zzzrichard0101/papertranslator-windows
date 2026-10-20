@@ -28,10 +28,10 @@ JOIN_WORDS=set('economic psychological paradigm practitioner practitioners parti
               'contradictions situate situated depression uncertainty'.split())
 
 
-def join_lines(left,right):
+def join_lines(left,right,extra_words=()):
     if left.endswith('-') and right[:1].islower():
         a=re.search(r'([A-Za-z]+)-$',left);b=re.match(r'([a-z]+)',right)
-        remove=bool(a and b and (a[1]+b[1]).lower() in JOIN_WORDS)
+        remove=bool(a and b and (a[1]+b[1]).lower() in JOIN_WORDS.union(extra_words))
         return (left[:-1] if remove else left)+right,remove
     return left+(' ' if left else '')+right,False
 
@@ -51,23 +51,26 @@ def protected_kind(text, spans):
     return None
 
 
-def paragraph_units(page, text_blocks=None):
+def paragraph_units(page, text_blocks=None,source_integrity=False):
     """Use blank lines, typography and bullets, including across PDF text blocks."""
     units=[];current=[];previous=None
     def flush():
         nonlocal current
         if not current:return
-        text='';layout_lines=[]
+        text='';layout_lines=[];removed_hyphens=0
         raw=' '.join(line['text'].strip() for line in current)
         for line in current:
             part=line['text'].strip()
-            text,removed=join_lines(text,part)
+            from .source_integrity import JOIN_WORDS as SCIENTIFIC_WORDS
+            text,removed=join_lines(text,part,SCIENTIFIC_WORDS if source_integrity else ())
+            removed_hyphens+=int(removed)
             if removed and layout_lines:layout_lines[-1]['end']-=1
             layout_lines.append(dict(start=len(text)-len(part),end=len(text),bbox=line['bbox']))
         bbox=[min(l['bbox'][0] for l in current),min(l['bbox'][1] for l in current),
               max(l['bbox'][2] for l in current),max(l['bbox'][3] for l in current)]
         spans=[s for l in current for s in l['spans']]
         units.append(dict(source=text,raw_source=raw,bbox=bbox,layout_lines=layout_lines,kind=current[0]['kind'],preserve=False,style_runs=spans,rotation=current[0].get('rotation',0),region_bbox=current[0].get('region_bbox'),erase_patch=current[0].get('erase_patch')))
+        if source_integrity:units[-1]['removed_line_hyphens']=removed_hyphens
         if current[0].get('flow_order') is not None:
             units[-1]['flow_order']=current[0]['flow_order']
         if current[0].get('column_bbox'):
@@ -97,6 +100,9 @@ def paragraph_units(page, text_blocks=None):
             rotation=line.get('rotation',0)
             diagram_label=bool(rotation or line.get('diagram_label'))
             isolated=diagram_label or bool(line.get('layout_kind'))
+            if source_integrity and line.get('layout_kind')=='caption' and not diagram_label:
+                from .source_integrity import CAPTION
+                isolated=False;heading=bool(CAPTION.match(text))
             if isolated:flush();previous=None
             kind=line.get('layout_kind') or ('diagram_label' if diagram_label else ('list_label' if re.match(r'^\s*Level\s*\d+\s*$',text,re.I) else ('heading' if heading else 'paragraph')))
             gap=previous and line['bbox'][1]-previous['bbox'][3]>max(s['size'] for s in visible)*.65
@@ -157,7 +163,7 @@ def segments(text, limit=1800):
     return result
 
 
-def analyze(source, selected, progress=lambda *_: None, ocr_mode='auto', cancel=lambda: False, ocr_engine=None,cache_dir=None,recovery=False,structured=False,academic=False):
+def analyze(source, selected, progress=lambda *_: None, ocr_mode='auto', cancel=lambda: False, ocr_engine=None,cache_dir=None,recovery=False,structured=False,academic=False,source_integrity=False):
     doc = fitz.open(source); pages = []; blocks = []; extracted=[]
     engine=ocr_engine;column_hint=None;hint_size=None;previous_index=None
     def recognize(pixels):
@@ -217,6 +223,9 @@ def analyze(source, selected, progress=lambda *_: None, ocr_mode='auto', cancel=
                 body_blocks=join_fragments(body_blocks)
                 page_info['ocr']['reconstructed_fragments']=sum(
                     max(0,l.get('reconstructed_fragments',1)-1) for b in body_blocks for l in b.get('lines',[]))
+            if source_integrity:
+                from .source_integrity import annotate
+                annotate(body_blocks)
             column_info=None
             if academic:
                 from .academic_layout import columns
@@ -231,11 +240,19 @@ def analyze(source, selected, progress=lambda *_: None, ocr_mode='auto', cancel=
                 from .structure import two_columns
                 body_blocks,column_info=two_columns(page,body_blocks)
                 if column_info:page_info['reading_columns']=column_info
-            units=paragraph_units(page,body_blocks)
+            accounting_blocks=body_blocks
+            if source_integrity:
+                from .source_integrity import split_footnote_markers
+                body_blocks=split_footnote_markers(body_blocks,page.rect.height)
+            units=paragraph_units(page,body_blocks,source_integrity=source_integrity)
+            if source_integrity:
+                from .source_integrity import validate_lines
+                page_info['source_accounting']=validate_lines(accounting_blocks,units)
             for cell in table_cells:
                 cell_blocks=[dict(type=0,lines=cell['lines'],bbox=cell['bbox'])]
                 if recovery:cell_blocks=join_fragments(cell_blocks)
-                cell_units=paragraph_units(page,cell_blocks)
+                cell_units=paragraph_units(page,cell_blocks,source_integrity=source_integrity)
+                if source_integrity:validate_lines(cell_blocks,cell_units)
                 # A cell remains one translation unit; boundaries never cross a grid.
                 for unit in cell_units:
                     unit.update(kind='table_cell',table_index=cell['table'],cell_index=cell['cell'],cell_bbox=cell['bbox'])
@@ -292,6 +309,7 @@ def analyze(source, selected, progress=lambda *_: None, ocr_mode='auto', cancel=
         footer_key=lambda u,p:re.sub(r'\W+','',u['source']).casefold() if u['bbox'][1]>p['height']*.88 and len(u['source'])<180 else None
         footers=Counter(key for units,page in zip(extracted,pages) for key in set(filter(None,(footer_key(u,page) for u in units)))) if academic else {}
         metadata={'page_marker','running_header','caption'}
+        prior_references=False
         for page_number,(units,page_info) in enumerate(zip(extracted,pages)):
             page_text=' '.join(unit['source'] for unit in units)
             labels=[unit['source'].strip().casefold() for unit in units if unit['bbox'][1]<page_info['height']*.3]
@@ -319,8 +337,12 @@ def analyze(source, selected, progress=lambda *_: None, ocr_mode='auto', cancel=
                 label=unit['source'].strip().casefold()
                 if reference_section and label in {'references','bibliography','index'} and unit['kind']!='running_header':
                     unit.update(kind='heading',preserve=False)
-                elif reference_section and unit['kind'] not in metadata:
+                elif reference_section and unit['kind'] not in metadata and not (source_integrity and reference_section=='references'):
                     unit.update(kind='reference',preserve=True,preserve_reason=reference_section)
+            if source_integrity:
+                from .source_integrity import reference_units
+                adjacent=page_number>0 and pages[page_number-1]['source_page_index']+1==page_info['source_page_index']
+                prior_references=reference_units(units,prior_references and adjacent)
             header_tops=[u['bbox'][1] for u in units if u['kind']=='running_header']
             if header_tops:
                 header_top=min(header_tops)
@@ -357,7 +379,11 @@ def analyze(source, selected, progress=lambda *_: None, ocr_mode='auto', cancel=
                 start=source.find(fragment['source'],offset)
                 if start<0:raise RuntimeError('연결 문단의 원문 위치를 확인하지 못했습니다.')
                 end=start+len(fragment['source']);spans.append((start,end,fragment));offset=end
-            for part,segment in enumerate([source] if block['preserve'] else segments(source)):
+            parts=[source] if block['preserve'] else segments(source)
+            if source_integrity:
+                from .source_integrity import validate_segments
+                validate_segments(source,parts)
+            for part,segment in enumerate(parts):
                 start=source.find(segment,cursor);end=start+len(segment);cursor=end
                 fragments=[slice_fragment(f,max(a,start)-a,min(b,end)-a) for a,b,f in spans if a<end and b>start]
                 fragments=[f for f in fragments if f['source'].strip()]
@@ -379,6 +405,11 @@ def analyze(source, selected, progress=lambda *_: None, ocr_mode='auto', cancel=
         if academic:
             from .academic_layout import VERSION as ACADEMIC_VERSION
             result['academic_layout']=ACADEMIC_VERSION
+        if source_integrity:
+            from .source_integrity import VERSION as SOURCE_VERSION
+            result['source_integrity']=dict(version=SOURCE_VERSION,status='passed',
+                scope='extracted text to translation input; not OCR or semantic certification',
+                segmented_units=len(logical))
         return result
     finally:
         doc.close()
@@ -523,6 +554,7 @@ def export(ir, records, original, folder, title, job, cancel=lambda: False):
         review_status='not_performed' if not reviewed else ('all_machine_reviewed' if len(reviewed)==len(translated) else 'partially_machine_reviewed')
         quality=dict(schema=6, ocr=ir.get('ocr'), ocr_pages=sum(p.get('ocr',{}).get('lines',0)>0 for p in ir['pages']),
                      efficiency_policy=job.get('efficiency_policy'),performance=job.get('performance'),
+                     source_integrity=ir.get('source_integrity'),
                      translation_response_cache_hits=sum(bool(r.get('translation_cache')) for r in records.values()),
                      typed_preserved_units=sum(r.get('preservation_reason')=='typed_literal_v1' for r in records.values()),
                      ocr_recovery=dict(attempted_regions=sum(p.get('ocr',{}).get('recovery',{}).get('attempted_regions',0) for p in ir['pages']),

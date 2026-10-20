@@ -71,8 +71,10 @@ def create_job(source, destination, page_spec='', profile='general', title='',mo
     state['inference_acceleration']=inference_acceleration
     state['processing_revision']=3
     state['document_layout']='auto_columns_v1'
-    state['efficiency_policy']=dict(version='local-efficiency-1',validation='typed-v1',response_cache='resolved-2',session_reuse=True)
-    state['quality_policy']['validation']='typed-v1'
+    state['efficiency_policy']=dict(version='local-efficiency-1',validation='typed-v2',response_cache='resolved-2',session_reuse=True)
+    state['quality_policy']['validation']='typed-v2'
+    from .source_integrity import VERSION as SOURCE_VERSION
+    state['source_integrity_policy']=SOURCE_VERSION
     if cloud:state['quality_policy']['cloud']={k:cloud[k] for k in ['enabled','model','max_requests']}
     state['ocr_mode']=ocr_mode
     state['bilingual_layout']=bilingual_layout
@@ -146,6 +148,8 @@ def _run(folder, retry_failed):
         upgraded=state.get('processing_revision',0)>=1
         structured=state.get('processing_revision',0)>=2
         academic=state.get('processing_revision',0)>=3
+        from .source_integrity import VERSION as SOURCE_VERSION
+        source_integrity=state.get('source_integrity_policy')==SOURCE_VERSION
         analysis_identity=dict(source_sha256=state['source_sha256'],selected=selected,
             parser=PARSER,ocr=signature(state.get('ocr_mode','off'),recovery=upgraded))
         if structured:
@@ -154,14 +158,15 @@ def _run(folder, retry_failed):
         if academic:
             from .academic_layout import VERSION as ACADEMIC_VERSION
             analysis_identity['academic']=ACADEMIC_VERSION
+        if source_integrity:analysis_identity['source_integrity']=SOURCE_VERSION
         ir,analysis_hit=get_analysis(folder,analysis_identity,
             lambda:analyze(original,selected,lambda p:save(stage='PDF 분석 · 필요 시 로컬 OCR',current_source_page=p),
-                ocr_mode=state.get('ocr_mode','off'),cancel=cancel,cache_dir=folder/'ocr-cache',recovery=upgraded,structured=structured,academic=academic),cancel)
+                ocr_mode=state.get('ocr_mode','off'),cancel=cancel,cache_dir=folder/'ocr-cache',recovery=upgraded,structured=structured,academic=academic,source_integrity=source_integrity),cancel)
         save(analysis_cache_hit=analysis_hit)
         if efficient:
             from .typed_literals import preserved_kind
             for block in ir['blocks']:
-                block['validation_policy']='typed-v1'
+                block['validation_policy']=state['efficiency_policy'].get('validation','typed-v1')
                 kind=preserved_kind(block['source'])
                 if kind and not block['preserve']:
                     block.update(kind=kind,preserve=True,preservation_reason='typed_literal_v1')
@@ -179,6 +184,7 @@ def _run(folder, retry_failed):
                                model=model, parser=PARSER, prompt=PROMPT_VERSION, quality=VERSION,
                                runtime=registry['runtime_release'], options=options_for(model),ocr=ir['ocr'],quality_policy=quality_policy)
         if efficient:identity['efficiency']=state['efficiency_policy']
+        if source_integrity:identity['source_integrity']=SOURCE_VERSION
         if upgraded:
             from .terminology import VERSION as TERMS_VERSION
             identity['processing']=dict(revision=state['processing_revision'],terminology=TERMS_VERSION)
@@ -218,7 +224,7 @@ def _run(folder, retry_failed):
                     record=translate_record(backend,block,state['profile'],model.get('adapter','hy'),folder,memory=journal)
                     record['wall_seconds']=round(time.monotonic()-measured_start,3)
                 record.update(extraction=block['extraction'],ocr_confidence_min=block['ocr_confidence_min'])
-                if efficient:record['validation_policy']='typed-v1'
+                if efficient:record['validation_policy']=block['validation_policy']
                 if block.get('preservation_reason'):record['preservation_reason']=block['preservation_reason']
                 if block['ocr_confidence_min'] is not None and block['ocr_confidence_min']<LOW_CONFIDENCE:
                     record['issues'].append(dict(code='ocr_low_confidence',severity='major',

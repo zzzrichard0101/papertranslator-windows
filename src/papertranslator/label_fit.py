@@ -1,4 +1,5 @@
 """Source-grounded, bounded retries for concise diagram labels."""
+from .typed_literals import validation_mode
 import json,math
 import pymupdf as fitz
 from .layout import wrap
@@ -42,7 +43,7 @@ def run(records,model,folder,backend_factory,save,progress,cancel):
                 try:
                     raw=backend.translate(prompt,max_tokens=900,json_schema=SCHEMA)
                     atomic_json(folder/'responses'/f'label-fit-{record["id"]}-{attempt}.json',raw)
-                    value=validate_edit(json.loads(raw['text']),record['source'],record['target'],typed=record.get('validation_policy')=='typed-v1')
+                    value=validate_edit(json.loads(raw['text']),record['source'],record['target'],typed=validation_mode(record.get('validation_policy')))
                     history['attempts'].append(value)
                     if value['decision']=='revise' and fits(record,value['revision'].strip()):
                         record['target']=value['revision'].strip();record['candidate']=record['target'];history['accepted']=True
